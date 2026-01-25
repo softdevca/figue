@@ -16,10 +16,11 @@ use facet_error as error;
 use facet_reflect::{Partial, ReflectError};
 
 use crate::{
-    config_format::{ConfigFormat, ConfigFormatError, FormatRegistry},
+    config_format::{ConfigFormat, ConfigFormatError},
     config_value::ConfigValue,
     env::{EnvConfig, EnvSource, StdEnv},
     help::HelpConfig,
+    layers::file::FormatRegistry,
     provenance::{ConfigResult, FilePathStatus, FileResolution, Provenance},
     schema::{Schema, error::SchemaError},
 };
