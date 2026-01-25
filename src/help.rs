@@ -97,16 +97,47 @@ fn generate_struct_help(out: &mut String, program_name: &str, fields: &'static [
     let mut positionals: Vec<&Field> = Vec::new();
     let mut subcommand: Option<&Field> = None;
 
+    // Recursively collect fields, handling flatten
+    collect_fields_recursive(fields, &mut flags, &mut positionals, &mut subcommand);
+
+    // Generate the help output
+    generate_struct_help_inner(out, program_name, flags, positionals, subcommand);
+}
+
+fn collect_fields_recursive<'a>(
+    fields: &'static [Field],
+    flags: &mut Vec<&'a Field>,
+    positionals: &mut Vec<&'a Field>,
+    subcommand: &mut Option<&'a Field>,
+) where
+    'static: 'a,
+{
     for field in fields {
+        // Handle flattened fields - recurse into the inner struct
+        if field.is_flattened() {
+            if let Type::User(UserType::Struct(inner)) = &field.shape().ty {
+                collect_fields_recursive(inner.fields, flags, positionals, subcommand);
+            }
+            continue;
+        }
+
         if field.has_attr(Some("args"), "subcommand") {
-            subcommand = Some(field);
+            *subcommand = Some(field);
         } else if field.has_attr(Some("args"), "positional") {
             positionals.push(field);
         } else {
             flags.push(field);
         }
     }
+}
 
+fn generate_struct_help_inner(
+    out: &mut String,
+    program_name: &str,
+    flags: Vec<&Field>,
+    positionals: Vec<&Field>,
+    subcommand: Option<&Field>,
+) {
     // Usage line
     out.push_str(&format!("{}:\n    ", "USAGE".yellow().bold()));
     out.push_str(program_name);
@@ -318,4 +349,72 @@ pub fn generate_subcommand_help(
     generate_struct_help(&mut out, &full_name, fields);
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use facet::Facet;
+
+    /// Common arguments that can be flattened into other structs
+    #[derive(Facet)]
+    struct CommonArgs {
+        /// Enable verbose output
+        #[facet(crate::named, crate::short = 'v')]
+        verbose: bool,
+
+        /// Enable quiet mode
+        #[facet(crate::named, crate::short = 'q')]
+        quiet: bool,
+    }
+
+    /// Args struct with flattened common args
+    #[derive(Facet)]
+    struct ArgsWithFlatten {
+        /// Input file
+        #[facet(crate::positional)]
+        input: String,
+
+        /// Common options
+        #[facet(flatten)]
+        common: CommonArgs,
+    }
+
+    #[test]
+    fn test_flatten_args_appear_in_help() {
+        let help = generate_help::<ArgsWithFlatten>(&HelpConfig::default());
+
+        // Flattened fields should appear at top level
+        assert!(
+            help.contains("--verbose"),
+            "help should contain --verbose from flattened CommonArgs"
+        );
+        assert!(help.contains("-v"), "help should contain -v short flag");
+        assert!(
+            help.contains("--quiet"),
+            "help should contain --quiet from flattened CommonArgs"
+        );
+        assert!(help.contains("-q"), "help should contain -q short flag");
+
+        // The flattened field name 'common' should NOT appear as a flag
+        assert!(
+            !help.contains("--common"),
+            "help should not show --common as a flag"
+        );
+    }
+
+    #[test]
+    fn test_flatten_docs_preserved() {
+        let help = generate_help::<ArgsWithFlatten>(&HelpConfig::default());
+
+        // Doc comments from flattened fields should be present
+        assert!(
+            help.contains("verbose output"),
+            "help should contain verbose field doc"
+        );
+        assert!(
+            help.contains("quiet mode"),
+            "help should contain quiet field doc"
+        );
+    }
 }
