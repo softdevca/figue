@@ -216,7 +216,7 @@ fn test_optional_subcommand() {
     #[derive(Facet, Debug)]
     struct Args {
         #[facet(args::named)]
-        version: bool,
+        verbose: bool,
 
         #[facet(args::subcommand)]
         command: Option<SubCommand>,
@@ -227,13 +227,13 @@ fn test_optional_subcommand() {
     assert_eq!(args.command, Some(SubCommand::Status));
 
     // Without subcommand (just flags)
-    let args: Args = figue::from_slice(&["--version"]).unwrap();
-    assert!(args.version);
+    let args: Args = figue::from_slice(&["--verbose"]).unwrap();
+    assert!(args.verbose);
     assert_eq!(args.command, None);
 
     // Empty args
     let args: Args = figue::from_slice(&[]).unwrap();
-    assert!(!args.version);
+    assert!(!args.verbose);
     assert_eq!(args.command, None);
 }
 

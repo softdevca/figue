@@ -489,6 +489,8 @@ enum StackFrame<'input> {
         fields: Vec<(&'input str, &'input ConfigValue, Option<&'static Shape>)>,
         phase: u8,
         shape: Option<&'static Shape>,
+        /// The variant's struct kind - needed to distinguish empty struct variants from unit variants
+        variant_kind: facet_core::StructKind,
     },
 }
 
@@ -627,6 +629,7 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                     fields,
                     phase,
                     shape,
+                    variant_kind,
                 } => {
                     match phase {
                         0 => {
@@ -636,6 +639,7 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                                 fields,
                                 phase: 1,
                                 shape,
+                                variant_kind,
                             });
                             return Ok(Some(ParseEvent::FieldKey(FieldKey::new(
                                 variant,
@@ -650,13 +654,17 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                                 fields: Vec::new(), // no longer needed
                                 phase: 2,
                                 shape: None,
+                                variant_kind: facet_core::StructKind::Unit, // not used in phase 2
                             });
 
-                            if fields.is_empty() {
+                            // Use variant_kind to determine whether this is a unit or struct variant.
+                            // This is important because struct variants with all optional fields
+                            // may have empty fields but still need to be serialized as structs.
+                            if variant_kind == facet_core::StructKind::Unit {
                                 // Unit variant: emit Unit scalar
                                 return Ok(Some(ParseEvent::Scalar(ScalarValue::Unit)));
                             } else {
-                                // Struct variant: emit StructStart and push Object processing
+                                // Struct/tuple variant: emit StructStart and push Object processing
                                 self.stack.push(StackFrame::Object {
                                     entries: fields,
                                     index: 0,
@@ -782,17 +790,26 @@ impl<'input> ConfigValueParser<'input> {
             ConfigValue::Enum(sourced) => {
                 self.update_span(sourced);
 
-                // For enums, find the variant's fields from the enum shape
-                let variant_fields: Option<&'static [facet_core::Field]> = shape.and_then(|s| {
+                // For enums, find the variant from the enum shape.
+                // We search by both the original Rust name (v.name) and the effective name
+                // (v.effective_name()) to handle renamed variants. The CLI parser stores
+                // the effective_name, but we need the variant info to know the struct kind.
+                let variant_info: Option<&'static facet_core::Variant> = shape.and_then(|s| {
                     if let Type::User(UserType::Enum(e)) = &s.ty {
-                        e.variants
-                            .iter()
-                            .find(|v| v.name == sourced.value.variant)
-                            .map(|v| v.data.fields)
+                        e.variants.iter().find(|v| {
+                            v.name == sourced.value.variant
+                                || v.effective_name() == sourced.value.variant
+                        })
                     } else {
                         None
                     }
                 });
+
+                // Get fields and kind from the variant
+                let variant_fields = variant_info.map(|v| v.data.fields);
+                let variant_kind = variant_info
+                    .map(|v| v.data.kind)
+                    .unwrap_or(facet_core::StructKind::Unit);
 
                 // Collect entries with their field shapes from the variant's fields
                 let fields: Vec<(&str, &ConfigValue, Option<&'static Shape>)> = sourced
@@ -818,6 +835,7 @@ impl<'input> ConfigValueParser<'input> {
                     fields,
                     phase: 0,
                     shape: None, // Enum variants use fields directly, not a shape wrapper
+                    variant_kind,
                 });
 
                 // Emit the outer struct start (the enum wrapper)
