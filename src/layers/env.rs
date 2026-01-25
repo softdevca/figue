@@ -271,51 +271,82 @@ impl<'a> EnvParseContext<'a> {
                 continue;
             }
 
-            // Check if path exists in schema
+            // Check if path exists in schema and get the target path for insertion
             let config_schema = self.config_schema.unwrap();
-            if !self.path_exists_in_schema(config_schema, &path) {
-                self.add_unused_key(&path, &name);
-                if self.env_config.strict {
-                    self.emit_error(format!("unknown configuration key: {}", path.join(".")));
+            let target_path = match self.resolve_path_in_schema(config_schema, &path) {
+                Some(target) => target,
+                None => {
+                    self.add_unused_key(&path, &name);
+                    if self.env_config.strict {
+                        self.emit_error(format!("unknown configuration key: {}", path.join(".")));
+                    }
+                    continue;
                 }
-                continue;
-            }
+            };
 
-            // Parse the value and insert it
+            // Parse the value and insert it at the target path
             let config_value = self.parse_value(&value, &name);
-            self.insert_at_path(&path, config_value);
+            self.insert_at_path(&target_path, config_value);
         }
     }
 
-    fn path_exists_in_schema(&self, schema: &ConfigStructSchema, path: &[String]) -> bool {
+    /// Resolve an input path against the schema, returning the target path for insertion.
+    ///
+    /// For flattened fields, the input path uses the flattened field name (e.g., `["log_level"]`)
+    /// but we return the target_path for where to insert the value (e.g., `["common", "log_level"]`).
+    fn resolve_path_in_schema(
+        &self,
+        schema: &ConfigStructSchema,
+        path: &[String],
+    ) -> Option<Vec<String>> {
         if path.is_empty() {
-            return true;
+            return Some(vec![]);
         }
 
         let first = &path[0];
         if let Some(field) = schema.fields().get(first) {
             if path.len() == 1 {
-                return true;
+                // Leaf field - return the target_path
+                return Some(field.target_path().to_vec());
             }
             // Check nested
-            match &field.value {
-                ConfigValueSchema::Struct(nested) => self.path_exists_in_schema(nested, &path[1..]),
+            match field.value() {
+                ConfigValueSchema::Struct(nested) => {
+                    // Recurse into nested struct
+                    if let Some(mut nested_target) = self.resolve_path_in_schema(nested, &path[1..])
+                    {
+                        // Prepend the target_path for this field
+                        let mut result = field.target_path().to_vec();
+                        result.append(&mut nested_target);
+                        Some(result)
+                    } else {
+                        None
+                    }
+                }
                 ConfigValueSchema::Option { value, .. } => {
                     // Unwrap option and check inner
                     if let ConfigValueSchema::Struct(nested) = value.as_ref() {
-                        self.path_exists_in_schema(nested, &path[1..])
+                        if let Some(mut nested_target) =
+                            self.resolve_path_in_schema(nested, &path[1..])
+                        {
+                            let mut result = field.target_path().to_vec();
+                            result.append(&mut nested_target);
+                            Some(result)
+                        } else {
+                            None
+                        }
                     } else {
                         // Option of non-struct with more path - invalid
-                        false
+                        None
                     }
                 }
                 _ => {
                     // Leaf with more path segments - invalid
-                    false
+                    None
                 }
             }
         } else {
-            false
+            None
         }
     }
 
@@ -1017,10 +1048,11 @@ mod tests {
     }
 
     #[test]
-    fn test_flatten_config_parses_nested_path() {
-        // REEF__COMMON__LOG_LEVEL should set config.common.log_level
+    fn test_flatten_config_parses_flattened_field() {
+        // With flatten, REEF__LOG_LEVEL (not REEF__COMMON__LOG_LEVEL) should set config.common.log_level
+        // The input is flattened (hoisted to parent), but the output follows target_path
         let schema = Schema::from_shape(ArgsWithFlattenConfig::SHAPE).unwrap();
-        let env = MockEnv::from_pairs([("REEF__COMMON__LOG_LEVEL", "debug")]);
+        let env = MockEnv::from_pairs([("REEF__LOG_LEVEL", "debug")]);
         let config = env_config("REEF");
 
         let output = parse_env(&schema, &config, &env);
@@ -1037,16 +1069,18 @@ mod tests {
         );
 
         let value = output.value.expect("should have value");
+        // The value is placed at the target_path location for deserialization
         let log_level = get_nested(&value, &["config", "common", "log_level"])
             .expect("config.common.log_level");
         assert_eq!(get_string(log_level), Some("debug"));
     }
 
     #[test]
-    fn test_flatten_config_top_level_and_nested() {
-        // Mix of top-level and flattened config fields
+    fn test_flatten_config_top_level_and_flattened() {
+        // Mix of top-level (port) and flattened (debug from common) config fields
         let schema = Schema::from_shape(ArgsWithFlattenConfig::SHAPE).unwrap();
-        let env = MockEnv::from_pairs([("REEF__PORT", "8080"), ("REEF__COMMON__DEBUG", "true")]);
+        // PORT is not flattened, DEBUG is flattened from common
+        let env = MockEnv::from_pairs([("REEF__PORT", "8080"), ("REEF__DEBUG", "true")]);
         let config = env_config("REEF");
 
         let output = parse_env(&schema, &config, &env);
@@ -1066,6 +1100,7 @@ mod tests {
         let port = get_nested(&value, &["config", "port"]).expect("config.port");
         assert_eq!(get_string(port), Some("8080"));
 
+        // debug is placed at target_path for deserialization
         let debug =
             get_nested(&value, &["config", "common", "debug"]).expect("config.common.debug");
         assert_eq!(get_string(debug), Some("true"));

@@ -31,11 +31,46 @@ use std::vec::Vec;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use std::collections::HashSet;
+
 use crate::config_format::{ConfigFormat, ConfigFormatError, JsonFormat};
 use crate::config_value::ConfigValue;
 use crate::driver::{Diagnostic, LayerOutput, Severity, UnusedKey};
 use crate::provenance::{ConfigFile, FilePathStatus, FileResolution, Provenance};
 use crate::schema::{ConfigStructSchema, ConfigValueSchema, Schema};
+
+// ============================================================================
+// Valid Paths Helper
+// ============================================================================
+
+/// Tracks valid paths for config file validation.
+///
+/// Distinguishes between:
+/// - Container paths: intermediate objects (like "common" when "common.log_level" exists)
+/// - Leaf paths: actual field values
+#[derive(Default)]
+struct ValidPaths {
+    /// All valid paths (both containers and leaves)
+    paths: HashSet<Vec<String>>,
+}
+
+impl ValidPaths {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn add_container(&mut self, path: Vec<String>) {
+        self.paths.insert(path);
+    }
+
+    fn add_leaf(&mut self, path: Vec<String>) {
+        self.paths.insert(path);
+    }
+
+    fn is_valid(&self, path: &[String]) -> bool {
+        self.paths.contains(path)
+    }
+}
 
 // ============================================================================
 // Format Registry
@@ -335,10 +370,96 @@ impl<'a> FileParseContext<'a> {
     }
 
     /// Validate parsed values against the schema and collect unused keys.
+    ///
+    /// This function handles flattened fields by using `target_path` to understand
+    /// the expected nested structure. The schema's fields are flattened, but the
+    /// JSON/config file will have the original nested structure.
     fn validate_and_collect_unused(
         &mut self,
         value: &ConfigValue,
         schema: &ConfigStructSchema,
+        path: Vec<String>,
+    ) {
+        // Build a set of valid paths from the schema's target_paths
+        let valid_paths = self.build_valid_paths(schema);
+
+        // Recursively validate against the valid paths
+        self.validate_recursive(value, &valid_paths, path);
+    }
+
+    /// Build a set of all valid key paths from the schema.
+    ///
+    /// This uses target_path to understand nested structures created by flatten.
+    /// For example, if we have:
+    ///   - field "log_level" with target_path ["common", "log_level"]
+    ///   - field "debug" with target_path ["common", "debug"]
+    ///
+    /// This returns paths: ["log_level"], ["debug"], ["common"], ["common", "log_level"], ["common", "debug"]
+    fn build_valid_paths(&self, schema: &ConfigStructSchema) -> ValidPaths {
+        let mut valid = ValidPaths::new();
+
+        for (field_name, field_schema) in schema.fields() {
+            let target_path = field_schema.target_path();
+
+            if target_path.len() == 1 && target_path[0] == *field_name {
+                // Non-flattened field - add as direct key
+                valid.add_leaf(vec![field_name.clone()]);
+
+                // If it's a struct, recurse to add nested paths
+                self.add_nested_paths(field_schema.value(), vec![field_name.clone()], &mut valid);
+            } else {
+                // Flattened field - target_path tells us the actual nested location
+                // Add all intermediate paths as valid containers
+                for i in 0..target_path.len() {
+                    let prefix: Vec<String> = target_path[..=i].to_vec();
+                    if i < target_path.len() - 1 {
+                        valid.add_container(prefix);
+                    } else {
+                        valid.add_leaf(prefix.clone());
+                        // If it's a struct, recurse to add nested paths
+                        self.add_nested_paths(field_schema.value(), prefix, &mut valid);
+                    }
+                }
+            }
+        }
+
+        valid
+    }
+
+    /// Recursively add nested paths for struct fields.
+    fn add_nested_paths(
+        &self,
+        value_schema: &ConfigValueSchema,
+        prefix: Vec<String>,
+        valid: &mut ValidPaths,
+    ) {
+        match value_schema {
+            ConfigValueSchema::Struct(nested) => {
+                for (name, field) in nested.fields() {
+                    let mut path = prefix.clone();
+                    path.push(name.clone());
+                    valid.add_leaf(path.clone());
+                    self.add_nested_paths(field.value(), path, valid);
+                }
+            }
+            ConfigValueSchema::Option { value, .. } => {
+                self.add_nested_paths(value, prefix, valid);
+            }
+            ConfigValueSchema::Vec(vec_schema) => {
+                // For vec, we can't predict indices, but we mark the prefix as valid
+                self.add_nested_paths(vec_schema.element(), prefix, valid);
+            }
+            ConfigValueSchema::Leaf(_) => {
+                // Nothing more to add
+            }
+        }
+    }
+
+    /// Recursively validate config values against valid paths.
+    fn validate_recursive(
+        &mut self,
+        value: &ConfigValue,
+        valid_paths: &ValidPaths,
         path: Vec<String>,
     ) {
         if let ConfigValue::Object(obj) = value {
@@ -346,24 +467,13 @@ impl<'a> FileParseContext<'a> {
                 let mut key_path = path.clone();
                 key_path.push(key.clone());
 
-                // Check if this key exists in the schema
-                if let Some(field_schema) = schema.fields().get(key) {
-                    // Key exists - recurse if it's a struct
-                    match &field_schema.value {
-                        ConfigValueSchema::Struct(nested) => {
-                            self.validate_and_collect_unused(val, nested, key_path);
-                        }
-                        ConfigValueSchema::Option { value: inner, .. } => {
-                            if let ConfigValueSchema::Struct(nested) = inner.as_ref() {
-                                self.validate_and_collect_unused(val, nested, key_path);
-                            }
-                        }
-                        _ => {
-                            // Leaf value - nothing to recurse
-                        }
+                if valid_paths.is_valid(&key_path) {
+                    // Valid key - recurse if it's an object
+                    if matches!(val, ConfigValue::Object(_)) {
+                        self.validate_recursive(val, valid_paths, key_path);
                     }
                 } else {
-                    // Unknown key - extract provenance from the value
+                    // Unknown key
                     let prov = get_provenance(val).cloned().unwrap_or(Provenance::Default);
                     self.unused_keys.push(UnusedKey {
                         key: key_path.clone(),
@@ -716,5 +826,178 @@ mod tests {
         let registry = FormatRegistry::with_defaults();
         let extensions = registry.extensions();
         assert!(extensions.contains(&"json"));
+    }
+
+    // ========================================================================
+    // Tests: Flatten support
+    // ========================================================================
+
+    /// Common config fields that can be flattened
+    #[derive(Facet)]
+    struct CommonConfig {
+        /// Log level
+        log_level: Option<String>,
+        /// Debug mode
+        debug: bool,
+    }
+
+    /// Config with flattened common fields
+    #[derive(Facet)]
+    struct ConfigWithFlatten {
+        /// Application name
+        name: String,
+        /// Common settings
+        #[facet(flatten)]
+        common: CommonConfig,
+    }
+
+    #[derive(Facet)]
+    struct ArgsWithFlattenedConfig {
+        #[facet(figue::config)]
+        config: ConfigWithFlatten,
+    }
+
+    #[test]
+    fn test_flatten_config_parses_nested_json() {
+        // JSON file has nested structure matching the flattened struct
+        let file = create_temp_json(
+            r#"{"name": "myapp", "common": {"log_level": "debug", "debug": true}}"#,
+        );
+        let path = Utf8PathBuf::from_path_buf(file.path().to_path_buf()).unwrap();
+
+        let schema = Schema::from_shape(ArgsWithFlattenedConfig::SHAPE).unwrap();
+        let config = FileConfig::new().path(path);
+
+        let result = parse_file(&schema, &config);
+
+        // No errors - flatten should be handled
+        assert!(
+            result.output.diagnostics.is_empty(),
+            "should have no errors: {:?}",
+            result.output.diagnostics
+        );
+
+        let value = result.output.value.expect("should have value");
+
+        // Check that fields are accessible at correct nested paths
+        let name = get_nested(&value, &["config", "name"]).expect("config.name");
+        assert_eq!(get_string(name), Some("myapp"));
+
+        // Flattened fields should be at config.common.log_level
+        let log_level = get_nested(&value, &["config", "common", "log_level"])
+            .expect("config.common.log_level");
+        assert_eq!(get_string(log_level), Some("debug"));
+
+        let debug =
+            get_nested(&value, &["config", "common", "debug"]).expect("config.common.debug");
+        assert!(matches!(debug, ConfigValue::Bool(b) if b.value));
+    }
+
+    /// Database config for nested flatten test
+    #[derive(Facet)]
+    struct DatabaseConfig {
+        /// Database host
+        host: String,
+        /// Database port
+        port: u16,
+    }
+
+    /// Extended config with double flatten
+    #[derive(Facet)]
+    struct ExtendedConfig {
+        #[facet(flatten)]
+        common: CommonConfig,
+        #[facet(flatten)]
+        database: DatabaseConfig,
+    }
+
+    /// Config with deeply nested flatten
+    #[derive(Facet)]
+    struct ConfigWithNestedFlatten {
+        app_name: String,
+        #[facet(flatten)]
+        extended: ExtendedConfig,
+    }
+
+    #[derive(Facet)]
+    struct ArgsWithNestedFlattenConfig {
+        #[facet(figue::config)]
+        config: ConfigWithNestedFlatten,
+    }
+
+    #[test]
+    fn test_deeply_nested_flatten_config() {
+        // JSON file has deeply nested structure
+        let file = create_temp_json(
+            r#"{
+                "app_name": "super-app",
+                "extended": {
+                    "common": {
+                        "log_level": "info",
+                        "debug": false
+                    },
+                    "database": {
+                        "host": "db.example.com",
+                        "port": 5432
+                    }
+                }
+            }"#,
+        );
+        let path = Utf8PathBuf::from_path_buf(file.path().to_path_buf()).unwrap();
+
+        let schema = Schema::from_shape(ArgsWithNestedFlattenConfig::SHAPE).unwrap();
+        let config = FileConfig::new().path(path);
+
+        let result = parse_file(&schema, &config);
+
+        assert!(
+            result.output.diagnostics.is_empty(),
+            "should have no errors: {:?}",
+            result.output.diagnostics
+        );
+
+        let value = result.output.value.expect("should have value");
+
+        // Check non-flattened field
+        let app_name = get_nested(&value, &["config", "app_name"]).expect("config.app_name");
+        assert_eq!(get_string(app_name), Some("super-app"));
+
+        // Check deeply nested flattened fields
+        let log_level = get_nested(&value, &["config", "extended", "common", "log_level"])
+            .expect("config.extended.common.log_level");
+        assert_eq!(get_string(log_level), Some("info"));
+
+        let host = get_nested(&value, &["config", "extended", "database", "host"])
+            .expect("config.extended.database.host");
+        assert_eq!(get_string(host), Some("db.example.com"));
+
+        let port = get_nested(&value, &["config", "extended", "database", "port"])
+            .expect("config.extended.database.port");
+        assert_eq!(get_integer(port), Some(5432));
+    }
+
+    #[test]
+    fn test_flatten_config_unknown_key_detection() {
+        // JSON with an unknown key in the flattened structure
+        let file = create_temp_json(
+            r#"{"name": "myapp", "common": {"log_level": "debug", "debug": true, "unknown": 123}}"#,
+        );
+        let path = Utf8PathBuf::from_path_buf(file.path().to_path_buf()).unwrap();
+
+        let schema = Schema::from_shape(ArgsWithFlattenedConfig::SHAPE).unwrap();
+        let config = FileConfig::new().path(path);
+
+        let result = parse_file(&schema, &config);
+
+        // Should detect unknown key
+        assert!(
+            result
+                .output
+                .unused_keys
+                .iter()
+                .any(|k| k.key.contains(&"unknown".to_string())),
+            "should detect unknown key in flattened struct: {:?}",
+            result.output.unused_keys
+        );
     }
 }

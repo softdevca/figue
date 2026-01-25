@@ -472,6 +472,28 @@ impl ConfigStructSchema {
     }
 }
 
+impl ConfigFieldSchema {
+    /// Get the target path for this field.
+    ///
+    /// For non-flattened fields, this is just `["field_name"]`.
+    /// For flattened fields, this includes the path through the flattened structs.
+    pub fn target_path(&self) -> &Path {
+        &self.target_path
+    }
+
+    /// Get the value schema for this field.
+    pub fn value(&self) -> &ConfigValueSchema {
+        &self.value
+    }
+}
+
+impl ConfigVecSchema {
+    /// Get the element schema for this vec.
+    pub fn element(&self) -> &ConfigValueSchema {
+        &self.element
+    }
+}
+
 impl ValueSchema {
     /// Check if this is a boolean type.
     pub fn is_bool(&self) -> bool {

@@ -329,3 +329,201 @@ fn test_flatten_conflict_detected() {
         err
     );
 }
+
+// ============================================================================
+// Config-level flatten tests
+// ============================================================================
+
+/// Common config fields that can be flattened
+#[derive(Facet)]
+struct CommonConfig {
+    /// Log level
+    log_level: Option<String>,
+    /// Debug mode
+    debug: bool,
+}
+
+/// Database config
+#[derive(Facet)]
+struct DatabaseConfig {
+    /// Database host
+    host: String,
+    /// Database port
+    port: u16,
+}
+
+/// Config with flattened common fields
+#[derive(Facet)]
+struct ConfigWithFlatten {
+    /// Application name
+    name: String,
+    /// Common settings
+    #[facet(flatten)]
+    common: CommonConfig,
+}
+
+/// Args with config that has flatten
+#[derive(Facet)]
+struct ArgsWithFlattenedConfig {
+    #[facet(args::positional)]
+    input: String,
+    #[facet(args::config)]
+    config: ConfigWithFlatten,
+}
+
+#[test]
+fn test_config_flatten_schema_builds() {
+    let schema = Schema::from_shape(ArgsWithFlattenedConfig::SHAPE).expect("schema should build");
+    let config = schema.config().expect("should have config");
+    let fields = config.fields();
+
+    // Should have 3 fields: name, log_level, debug (flattened from common)
+    assert_eq!(fields.len(), 3, "should have 3 fields after flatten");
+    assert!(fields.contains_key("name"), "should have name field");
+    assert!(
+        fields.contains_key("log_level"),
+        "should have log_level from flattened common"
+    );
+    assert!(
+        fields.contains_key("debug"),
+        "should have debug from flattened common"
+    );
+}
+
+#[test]
+fn test_config_flatten_target_path() {
+    let schema = Schema::from_shape(ArgsWithFlattenedConfig::SHAPE).expect("schema should build");
+    let config = schema.config().expect("should have config");
+    let fields = config.fields();
+
+    // name is not flattened - target_path should be ["name"]
+    let name_field = fields.get("name").expect("name should exist");
+    assert_eq!(name_field.target_path, vec!["name".to_string()]);
+
+    // log_level is flattened from common - target_path should be ["common", "log_level"]
+    let log_level_field = fields.get("log_level").expect("log_level should exist");
+    assert_eq!(
+        log_level_field.target_path,
+        vec!["common".to_string(), "log_level".to_string()]
+    );
+
+    // debug is flattened from common - target_path should be ["common", "debug"]
+    let debug_field = fields.get("debug").expect("debug should exist");
+    assert_eq!(
+        debug_field.target_path,
+        vec!["common".to_string(), "debug".to_string()]
+    );
+}
+
+/// Deeply nested config flatten: common inside extended
+#[derive(Facet)]
+struct ExtendedConfig {
+    #[facet(flatten)]
+    common: CommonConfig,
+    #[facet(flatten)]
+    database: DatabaseConfig,
+}
+
+#[derive(Facet)]
+struct ConfigWithNestedFlatten {
+    app_name: String,
+    #[facet(flatten)]
+    extended: ExtendedConfig,
+}
+
+#[derive(Facet)]
+struct ArgsWithNestedFlattenConfig {
+    #[facet(args::positional)]
+    input: String,
+    #[facet(args::config)]
+    config: ConfigWithNestedFlatten,
+}
+
+#[test]
+fn test_config_nested_flatten_schema_builds() {
+    let schema =
+        Schema::from_shape(ArgsWithNestedFlattenConfig::SHAPE).expect("schema should build");
+    let config = schema.config().expect("should have config");
+    let fields = config.fields();
+
+    // Should have 5 fields: app_name + log_level, debug (from common) + host, port (from database)
+    assert_eq!(fields.len(), 5, "should have 5 fields after nested flatten");
+    assert!(fields.contains_key("app_name"), "should have app_name");
+    assert!(fields.contains_key("log_level"), "should have log_level");
+    assert!(fields.contains_key("debug"), "should have debug");
+    assert!(fields.contains_key("host"), "should have host");
+    assert!(fields.contains_key("port"), "should have port");
+}
+
+#[test]
+fn test_config_nested_flatten_target_path() {
+    let schema =
+        Schema::from_shape(ArgsWithNestedFlattenConfig::SHAPE).expect("schema should build");
+    let config = schema.config().expect("should have config");
+    let fields = config.fields();
+
+    // app_name is not flattened
+    let app_name_field = fields.get("app_name").expect("app_name should exist");
+    assert_eq!(app_name_field.target_path, vec!["app_name".to_string()]);
+
+    // log_level is nested: extended.common.log_level
+    let log_level_field = fields.get("log_level").expect("log_level should exist");
+    assert_eq!(
+        log_level_field.target_path,
+        vec![
+            "extended".to_string(),
+            "common".to_string(),
+            "log_level".to_string()
+        ]
+    );
+
+    // host is nested: extended.database.host
+    let host_field = fields.get("host").expect("host should exist");
+    assert_eq!(
+        host_field.target_path,
+        vec![
+            "extended".to_string(),
+            "database".to_string(),
+            "host".to_string()
+        ]
+    );
+}
+
+/// Test conflict detection in config flatten
+#[derive(Facet)]
+struct ConflictingConfigA {
+    name: String,
+}
+
+#[derive(Facet)]
+struct ConflictingConfigB {
+    name: String, // Same field name as ConflictingConfigA
+}
+
+#[derive(Facet)]
+struct ConfigWithConflictingFlatten {
+    #[facet(flatten)]
+    a: ConflictingConfigA,
+    #[facet(flatten)]
+    b: ConflictingConfigB,
+}
+
+#[derive(Facet)]
+struct ArgsWithConflictingConfigFlatten {
+    #[facet(args::positional)]
+    input: String,
+    #[facet(args::config)]
+    config: ConfigWithConflictingFlatten,
+}
+
+#[test]
+fn test_config_flatten_conflict_detected() {
+    let result = Schema::from_shape(ArgsWithConflictingConfigFlatten::SHAPE);
+    assert!(result.is_err(), "should detect duplicate config field");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("duplicate") || err.contains("name"),
+        "error should mention duplicate: {}",
+        err
+    );
+}

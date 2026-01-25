@@ -254,6 +254,15 @@ fn config_struct_schema_from_shape(
     ctx: &SchemaErrorContext,
     field_name: Option<String>,
 ) -> Result<ConfigStructSchema, SchemaError> {
+    config_struct_schema_from_shape_with_prefix(shape, ctx, field_name, Vec::new())
+}
+
+fn config_struct_schema_from_shape_with_prefix(
+    shape: &'static Shape,
+    ctx: &SchemaErrorContext,
+    field_name: Option<String>,
+    path_prefix: Vec<String>,
+) -> Result<ConfigStructSchema, SchemaError> {
     let struct_type = match &shape.ty {
         Type::User(UserType::Struct(s)) => *s,
         _ => {
@@ -265,11 +274,60 @@ fn config_struct_schema_from_shape(
     };
 
     let mut fields_map: IndexMap<String, ConfigFieldSchema, RandomState> = IndexMap::default();
+
     for field in struct_type.fields {
-        let docs = docs_from_lines(field.doc);
         let field_ctx = ctx.with_field(field.name);
+
+        // Handle flattened fields - recurse into the inner struct and merge fields
+        if field.is_flattened() {
+            let inner_shape = field.shape();
+            let _inner_struct = match &inner_shape.ty {
+                Type::User(UserType::Struct(s)) => *s,
+                _ => {
+                    return Err(SchemaError::new(
+                        field_ctx,
+                        format!("flattened config field `{}` must be a struct", field.name),
+                    ));
+                }
+            };
+
+            // Build the new path prefix including this field
+            let mut new_prefix = path_prefix.clone();
+            new_prefix.push(field.name.to_string());
+
+            // Recursively process the inner struct's fields
+            let inner = config_struct_schema_from_shape_with_prefix(
+                inner_shape,
+                &field_ctx,
+                None,
+                new_prefix,
+            )?;
+
+            // Merge the inner fields into our fields (checking for conflicts)
+            for (name, field_schema) in inner.fields {
+                if fields_map.contains_key(&name) {
+                    return Err(SchemaError::new(
+                        field_ctx.clone(),
+                        format!(
+                            "duplicate config field `{}` (from flattened field `{}`)",
+                            name, field.name
+                        ),
+                    ));
+                }
+                fields_map.insert(name, field_schema);
+            }
+
+            continue;
+        }
+
+        // Non-flattened field - add with proper target_path
+        let docs = docs_from_lines(field.doc);
         let value = config_value_schema_from_shape(field.shape(), &field_ctx)?;
-        let target_path = vec![field.name.to_string()];
+
+        // Build target path: prefix + this field's name
+        let mut target_path = path_prefix.clone();
+        target_path.push(field.name.to_string());
+
         fields_map.insert(
             field.name.to_string(),
             ConfigFieldSchema {
