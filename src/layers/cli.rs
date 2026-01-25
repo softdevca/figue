@@ -468,36 +468,8 @@ impl<'a> ParseContext<'a> {
     fn parse_value_string(&self, s: &str, arg_name: &str) -> ConfigValue {
         let prov = Some(Provenance::cli(arg_name, s));
 
-        // Try to parse as different types
-        if s == "true" {
-            return ConfigValue::Bool(Sourced {
-                value: true,
-                span: None,
-                provenance: prov,
-            });
-        }
-        if s == "false" {
-            return ConfigValue::Bool(Sourced {
-                value: false,
-                span: None,
-                provenance: prov,
-            });
-        }
-        if let Ok(i) = s.parse::<i64>() {
-            return ConfigValue::Integer(Sourced {
-                value: i,
-                span: None,
-                provenance: prov,
-            });
-        }
-        if let Ok(f) = s.parse::<f64>() {
-            return ConfigValue::Float(Sourced {
-                value: f,
-                span: None,
-                provenance: prov,
-            });
-        }
-
+        // Keep values as strings - type coercion happens during deserialization
+        // based on the schema's expected types. This is consistent with the env layer.
         ConfigValue::String(Sourced {
             value: s.to_string(),
             span: None,
@@ -896,7 +868,7 @@ mod tests {
     fn test_long_flag_with_value() {
         assert_parses_to::<SimpleArgs>(
             &["--port", "8080"],
-            cv::object([("port", cv::int(8080, "--port"))]),
+            cv::object([("port", cv::string("8080", "--port"))]),
         );
     }
 
@@ -904,7 +876,7 @@ mod tests {
     fn test_long_flag_with_equals() {
         assert_parses_to::<SimpleArgs>(
             &["--port=8080"],
-            cv::object([("port", cv::int(8080, "--port"))]),
+            cv::object([("port", cv::string("8080", "--port"))]),
         );
     }
 
@@ -912,14 +884,17 @@ mod tests {
     fn test_short_flag_with_value() {
         assert_parses_to::<SimpleArgs>(
             &["-p", "8080"],
-            cv::object([("port", cv::int(8080, "-p"))]),
+            cv::object([("port", cv::string("8080", "-p"))]),
         );
     }
 
     #[test]
     fn test_short_flag_attached_value() {
         // -p8080 (no space)
-        assert_parses_to::<SimpleArgs>(&["-p8080"], cv::object([("port", cv::int(8080, "-p"))]));
+        assert_parses_to::<SimpleArgs>(
+            &["-p8080"],
+            cv::object([("port", cv::string("8080", "-p"))]),
+        );
     }
 
     #[test]
@@ -928,7 +903,7 @@ mod tests {
             &["--verbose", "--port", "8080"],
             cv::object([
                 ("verbose", cv::bool(true, "--verbose")),
-                ("port", cv::int(8080, "--port")),
+                ("port", cv::string("8080", "--port")),
             ]),
         );
     }
@@ -975,7 +950,7 @@ mod tests {
             &["--config.port", "8080"],
             cv::object([(
                 "config",
-                cv::object([("port", cv::int(8080, "--config.port"))]),
+                cv::object([("port", cv::string("8080", "--config.port"))]),
             )]),
         );
     }
@@ -1000,9 +975,77 @@ mod tests {
                 ("verbose", cv::bool(true, "--verbose")),
                 (
                     "config",
-                    cv::object([("port", cv::int(8080, "--config.port"))]),
+                    cv::object([("port", cv::string("8080", "--config.port"))]),
                 ),
             ]),
+        );
+    }
+
+    // ========================================================================
+    // Tests: Config overrides with flattened config
+    // ========================================================================
+
+    /// Common configuration shared across services
+    #[derive(Facet)]
+    struct CommonConfigCli {
+        log_level: String,
+        debug: bool,
+    }
+
+    /// Server config with flattened common settings
+    #[derive(Facet)]
+    struct ServerConfigWithFlattenCli {
+        port: u16,
+        #[facet(flatten)]
+        common: CommonConfigCli,
+    }
+
+    #[derive(Facet)]
+    struct ArgsWithFlattenedConfigCli {
+        #[facet(args::named)]
+        verbose: bool,
+
+        #[facet(args::config)]
+        config: ServerConfigWithFlattenCli,
+    }
+
+    #[test]
+    fn test_config_override_with_flattened_struct() {
+        // CLI config overrides use the full path to the target location.
+        // Even though the schema has `log_level` as a flattened field,
+        // the CLI override uses --config.common.log_level to specify
+        // the actual nested path where the value will be stored.
+        assert_parses_to::<ArgsWithFlattenedConfigCli>(
+            &["--config.common.log_level", "debug"],
+            cv::object([(
+                "config",
+                cv::object([(
+                    "common",
+                    cv::object([(
+                        "log_level",
+                        cv::string("debug", "--config.common.log_level"),
+                    )]),
+                )]),
+            )]),
+        );
+    }
+
+    #[test]
+    fn test_config_override_flattened_and_regular_fields() {
+        // Mix of regular (port) and flattened (common.debug) fields
+        // Note: CLI config overrides parse values as strings; type coercion happens at deserialization
+        assert_parses_to::<ArgsWithFlattenedConfigCli>(
+            &["--config.port", "8080", "--config.common.debug", "true"],
+            cv::object([(
+                "config",
+                cv::object([
+                    ("port", cv::string("8080", "--config.port")),
+                    (
+                        "common",
+                        cv::object([("debug", cv::string("true", "--config.common.debug"))]),
+                    ),
+                ]),
+            )]),
         );
     }
 

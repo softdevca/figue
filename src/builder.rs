@@ -521,7 +521,7 @@ mod tests {
     #[test]
     #[ignore = "build_traced is being moved to the driver API"]
     fn test_builder_env_only() {
-        use crate::env::MockEnv;
+        use crate::layers::env::MockEnv;
 
         let env = MockEnv::from_pairs([
             ("TEST_BUILDER__PORT", "8080"),

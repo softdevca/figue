@@ -90,6 +90,18 @@ pub enum ArgsErrorKind {
         help_text: String,
     },
 
+    /// Version was requested via --version or -V
+    VersionRequested {
+        /// The version text
+        version_text: String,
+    },
+
+    /// Shell completions were requested via --completions
+    CompletionsRequested {
+        /// The generated completion script
+        script: String,
+    },
+
     /// Did not expect a positional argument at this position
     UnexpectedPositionalArgument {
         /// Fields of the struct/variant being parsed (for help text)
@@ -181,6 +193,8 @@ impl ArgsErrorKind {
     pub const fn code(&self) -> &'static str {
         match self {
             ArgsErrorKind::HelpRequested { .. } => "args::help",
+            ArgsErrorKind::VersionRequested { .. } => "args::version",
+            ArgsErrorKind::CompletionsRequested { .. } => "args::completions",
             ArgsErrorKind::UnexpectedPositionalArgument { .. } => "args::unexpected_positional",
             ArgsErrorKind::NoFields { .. } => "args::no_fields",
             ArgsErrorKind::EnumWithoutSubcommandAttribute { .. } => {
@@ -201,6 +215,8 @@ impl ArgsErrorKind {
     pub fn label(&self) -> String {
         match self {
             ArgsErrorKind::HelpRequested { .. } => "help requested".to_string(),
+            ArgsErrorKind::VersionRequested { .. } => "version requested".to_string(),
+            ArgsErrorKind::CompletionsRequested { .. } => "completions requested".to_string(),
             ArgsErrorKind::UnexpectedPositionalArgument { .. } => {
                 "unexpected positional argument".to_string()
             }
@@ -338,6 +354,8 @@ impl ArgsErrorKind {
                 Some(Box::new("provide a value after the flag"))
             }
             ArgsErrorKind::HelpRequested { .. }
+            | ArgsErrorKind::VersionRequested { .. }
+            | ArgsErrorKind::CompletionsRequested { .. }
             | ArgsErrorKind::NoFields { .. }
             | ArgsErrorKind::EnumWithoutSubcommandAttribute { .. }
             | ArgsErrorKind::MissingArgsAnnotation { .. }
