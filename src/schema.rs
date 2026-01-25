@@ -42,22 +42,26 @@ pub struct Schema {
 
 /// Fields marked with special attributes that trigger early exit behavior.
 ///
-/// These fields are detected during schema building and checked after CLI parsing
-/// to short-circuit before full deserialization.
+/// These fields are detected during schema building by looking for well-known
+/// field names: `help`, `version`, `completions`. These are typically provided
+/// by flattening `FigueBuiltins` into your Args struct.
+///
+/// After CLI parsing, the driver checks these fields to short-circuit before
+/// full deserialization.
 #[derive(Facet, Default, Debug)]
 #[facet(skip_all_unless_truthy)]
 pub struct SpecialFields {
-    /// Field path for `#[facet(figue::help)]` - when true, show help and exit 0.
+    /// Target path for the `help` field - when true, show help and exit 0.
     /// The field should be a `bool`.
-    pub help: Option<String>,
+    pub help: Option<Path>,
 
-    /// Field path for `#[facet(figue::completions)]` - when set, generate completions and exit 0.
+    /// Target path for the `completions` field - when set, generate completions and exit 0.
     /// The field should be `Option<Shell>`.
-    pub completions: Option<String>,
+    pub completions: Option<Path>,
 
-    /// Field path for `#[facet(figue::version)]` - when true, show version and exit 0.
+    /// Target path for the `version` field - when true, show version and exit 0.
     /// The field should be a `bool`.
-    pub version: Option<String>,
+    pub version: Option<Path>,
 }
 
 /// Schema for one "level" of arguments: top-level, a subcommand, a subcommand's subcommand etc.
@@ -382,6 +386,11 @@ impl Schema {
     /// Get the config struct schema, if any.
     pub fn config(&self) -> Option<&ConfigStructSchema> {
         self.config.as_ref()
+    }
+
+    /// Get the special fields (help, version, completions) if detected.
+    pub fn special(&self) -> &SpecialFields {
+        &self.special
     }
 }
 

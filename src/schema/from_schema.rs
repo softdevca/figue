@@ -6,7 +6,7 @@ use crate::{
     schema::{
         ArgKind, ArgLevelSchema, ArgSchema, ConfigFieldSchema, ConfigStructSchema,
         ConfigValueSchema, ConfigVecSchema, Docs, LeafKind, LeafSchema, ScalarType, Schema,
-        Subcommand, ValueSchema,
+        SpecialFields, Subcommand, ValueSchema,
         error::{SchemaError, SchemaErrorContext},
     },
 };
@@ -77,12 +77,37 @@ impl Schema {
             None
         };
 
+        // Detect special fields by well-known names
+        let special = detect_special_fields(&args);
+
         Ok(Schema {
             args,
             config,
-            special: Default::default(),
+            special,
         })
     }
+}
+
+/// Detect special fields (help, version, completions) by their well-known names.
+fn detect_special_fields(args: &ArgLevelSchema) -> SpecialFields {
+    let mut special = SpecialFields::default();
+
+    for (name, arg_schema) in args.args() {
+        match name.as_str() {
+            "help" => {
+                special.help = Some(arg_schema.target_path().clone());
+            }
+            "version" => {
+                special.version = Some(arg_schema.target_path().clone());
+            }
+            "completions" => {
+                special.completions = Some(arg_schema.target_path().clone());
+            }
+            _ => {}
+        }
+    }
+
+    special
 }
 
 fn has_any_args_attr(field: &Field) -> bool {

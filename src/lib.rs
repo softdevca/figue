@@ -122,6 +122,36 @@ mod tests {
             "help should contain --completions"
         );
     }
+
+    #[test]
+    fn test_figue_builtins_special_fields_detected() {
+        let schema = Schema::from_shape(ArgsWithBuiltins::SHAPE).unwrap();
+        let special = schema.special();
+
+        // Help should be detected with path ["builtins", "help"]
+        assert!(special.help.is_some(), "help should be detected");
+        assert_eq!(
+            special.help.as_ref().unwrap(),
+            &vec!["builtins".to_string(), "help".to_string()]
+        );
+
+        // Version should be detected with path ["builtins", "version"]
+        assert!(special.version.is_some(), "version should be detected");
+        assert_eq!(
+            special.version.as_ref().unwrap(),
+            &vec!["builtins".to_string(), "version".to_string()]
+        );
+
+        // Completions should be detected with path ["builtins", "completions"]
+        assert!(
+            special.completions.is_some(),
+            "completions should be detected"
+        );
+        assert_eq!(
+            special.completions.as_ref().unwrap(),
+            &vec!["builtins".to_string(), "completions".to_string()]
+        );
+    }
 }
 
 /// Parse command-line arguments into a Facet type.
