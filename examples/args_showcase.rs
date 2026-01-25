@@ -7,25 +7,25 @@
 
 use facet::Facet;
 use facet_showcase::{Language, Scenario, ShowcaseRunner};
-use figue::{self as args, ArgsErrorWithInput};
+use figue::{self as args, driver::DriverError};
 
 /// Extension trait for displaying args parse results with Ariadne error formatting.
 trait ArgsResultExt<'a, 'b, T: facet::Facet<'b>> {
     /// Display the result - success values with facet-pretty, errors with Ariadne.
-    fn args_result(self, result: &'b Result<T, ArgsErrorWithInput>) -> Self;
+    fn args_result(self, result: &'b Result<T, DriverError>) -> Self;
 }
 
 impl<'a, 'b, T: facet::Facet<'b>> ArgsResultExt<'a, 'b, T> for Scenario<'a> {
-    fn args_result(self, result: &'b Result<T, ArgsErrorWithInput>) -> Self {
+    fn args_result(self, result: &'b Result<T, DriverError>) -> Self {
         match result {
             Ok(value) => self.success(value),
-            Err(err) if err.is_help_request() => {
+            Err(err) if err.is_help() => {
                 // Help text is not an error, display it as output (contains ANSI colors)
                 self.ansi_output(err.help_text().unwrap_or(""))
             }
             Err(err) => {
-                // Use Ariadne for pretty error display
-                self.ansi_output(&err.to_ariadne_string())
+                // Display the error (uses Ariadne via Display impl)
+                self.ansi_output(&format!("{}", err))
             }
         }
     }

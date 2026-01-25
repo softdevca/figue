@@ -1,13 +1,11 @@
 ---
-source: facet-args/tests/ariadne.rs
+source: tests/integration/ariadne.rs
 expression: ariadne_output
 ---
-[args::missing_argument] Error: missing required argument `--required-field`
+Error: Deserialization failed: Required field 'required_field' is missing
    ╭─[ <unknown>:1:1 ]
    │
  1 │ 
    │ │ 
-   │ ╰─ missing required argument `--required-field`
-   │ 
-   │ Help: provide a value with `--required-field <String>`
+   │ ╰─ Deserialization failed: Required field 'required_field' is missing
 ───╯

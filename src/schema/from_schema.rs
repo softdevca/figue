@@ -558,6 +558,7 @@ fn arg_level_from_fields_with_prefix(
 
             for variant in enum_type.variants {
                 let name = variant_cli_name(variant);
+                let variant_name = variant.name.to_string();
                 let docs = docs_from_lines(variant.doc);
                 let variant_fields = variant_fields_for_schema(variant);
                 let variant_ctx = SchemaErrorContext::root(enum_shape).with_variant(name.clone());
@@ -565,6 +566,7 @@ fn arg_level_from_fields_with_prefix(
 
                 let sub = Subcommand {
                     name: name.clone(),
+                    variant_name,
                     docs,
                     args: args_schema,
                     shape: enum_shape,

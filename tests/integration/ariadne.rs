@@ -44,7 +44,7 @@ fn test_ariadne_unknown_flag_with_suggestion() {
     let result: Result<Args, _> = figue::from_slice(&["--c0ncurrency", "4"]);
     let err = result.unwrap_err();
 
-    let ariadne_output = strip_ansi(&err.to_ariadne_string());
+    let ariadne_output = strip_ansi(&err.to_string());
     insta::assert_snapshot!("ariadne_unknown_flag_with_suggestion", ariadne_output);
 }
 
@@ -58,7 +58,7 @@ fn test_ariadne_missing_argument() {
     let result: Result<Args, _> = figue::from_slice(&[]);
     let err = result.unwrap_err();
 
-    let ariadne_output = strip_ansi(&err.to_ariadne_string());
+    let ariadne_output = strip_ansi(&err.to_string());
     insta::assert_snapshot!("ariadne_missing_argument", ariadne_output);
 }
 
@@ -72,7 +72,7 @@ fn test_ariadne_invalid_value() {
     let result: Result<Args, _> = figue::from_slice(&["--count", "not-a-number"]);
     let err = result.unwrap_err();
 
-    let ariadne_output = strip_ansi(&err.to_ariadne_string());
+    let ariadne_output = strip_ansi(&err.to_string());
     insta::assert_snapshot!("ariadne_invalid_value", ariadne_output);
 }
 
@@ -96,7 +96,7 @@ fn test_ariadne_unknown_subcommand() {
     let result: Result<Args, _> = figue::from_slice(&["buidl"]);
     let err = result.unwrap_err();
 
-    let ariadne_output = strip_ansi(&err.to_ariadne_string());
+    let ariadne_output = strip_ansi(&err.to_string());
     insta::assert_snapshot!("ariadne_unknown_subcommand", ariadne_output);
 }
 
@@ -110,7 +110,7 @@ fn test_ariadne_unexpected_positional() {
     let result: Result<Args, _> = figue::from_slice(&["unexpected", "--name", "value"]);
     let err = result.unwrap_err();
 
-    let ariadne_output = strip_ansi(&err.to_ariadne_string());
+    let ariadne_output = strip_ansi(&err.to_string());
     insta::assert_snapshot!("ariadne_unexpected_positional", ariadne_output);
 }
 
@@ -124,6 +124,6 @@ fn test_ariadne_expected_value_got_eof() {
     let result: Result<Args, _> = figue::from_slice(&["--concurrency"]);
     let err = result.unwrap_err();
 
-    let ariadne_output = strip_ansi(&err.to_ariadne_string());
+    let ariadne_output = strip_ansi(&err.to_string());
     insta::assert_snapshot!("ariadne_expected_value_got_eof", ariadne_output);
 }

@@ -138,7 +138,7 @@ fn test_auto_help_long_flag() {
     let result = figue::from_slice::<SimpleArgs>(&["--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
     assert!(err.help_text().is_some());
     let help = err.help_text().unwrap();
     // Help text is now colored, so check for "USAGE" without the colon
@@ -151,7 +151,7 @@ fn test_auto_help_short_flag() {
     let result = figue::from_slice::<SimpleArgs>(&["-h"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn test_auto_help_single_dash() {
     let result = figue::from_slice::<SimpleArgs>(&["-help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn test_auto_help_windows_style() {
     let result = figue::from_slice::<SimpleArgs>(&["/?"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
 }
 
 // TODO: Re-add test_auto_help_with_custom_config when builder API supports custom HelpConfig
@@ -190,7 +190,7 @@ fn test_help_not_triggered_with_other_args() {
     // This should fail, but not with a help request
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(!err.is_help_request());
+    assert!(!err.is_help());
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn test_subcommand_help_long_flag() {
     let result = figue::from_slice::<GitArgs>(&["clone", "--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
     let help = err.help_text().unwrap();
     // Should show help for the clone subcommand
     assert!(help.contains("clone"));
@@ -211,7 +211,7 @@ fn test_subcommand_help_short_flag() {
     let result = figue::from_slice::<GitArgs>(&["log", "-h"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
     let help = err.help_text().unwrap();
     assert!(help.contains("log"));
 }
@@ -222,7 +222,7 @@ fn test_nested_subcommand_help() {
     let result = figue::from_slice::<GitArgs>(&["remote", "add", "--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
     let help = err.help_text().unwrap();
     assert!(help.contains("add"));
 }
@@ -237,7 +237,7 @@ fn test_missing_required_subcommand_error() {
     let result = figue::from_slice::<GitArgs>(&[]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(!err.is_help_request()); // This is an ERROR, not help
+    assert!(!err.is_help()); // This is an ERROR, not help
 
     let display = format!("{}", err);
 
@@ -253,7 +253,7 @@ fn test_unknown_subcommand_error() {
     let result = figue::from_slice::<GitArgs>(&["notacommand"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(!err.is_help_request()); // This is an ERROR, not help
+    assert!(!err.is_help()); // This is an ERROR, not help
 
     let display = format!("{}", err);
 
@@ -269,7 +269,7 @@ fn test_subcommand_help_colored_snapshot() {
     let result = figue::from_slice::<GitArgs>(&["clone", "--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
 
     let help = err.help_text().unwrap();
 
@@ -286,7 +286,7 @@ fn test_nested_subcommand_help_colored_snapshot() {
     let result = figue::from_slice::<GitArgs>(&["remote", "add", "--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
 
     let help = err.help_text().unwrap();
 
@@ -354,7 +354,7 @@ fn test_tuple_variant_subcommand_help_flattening() {
     let result = figue::from_slice::<Args>(&["build", "--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.is_help_request());
+    assert!(err.is_help());
     let help = err.help_text().unwrap();
 
     // Should NOT contain `--0` (the tuple field index)

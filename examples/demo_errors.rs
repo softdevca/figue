@@ -96,7 +96,7 @@ fn main() {
         match result {
             Ok(_) => println!("✓ Successfully parsed arguments"),
             Err(e) => {
-                let is_help = e.is_help_request();
+                let is_help = e.is_help();
                 println!(
                     "\n{} {}",
                     if is_help {

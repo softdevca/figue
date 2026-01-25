@@ -134,6 +134,68 @@ fn fill_defaults_from_shape_recursive(
                 provenance: sourced.provenance.clone(),
             })
         }
+        ConfigValue::Enum(sourced) => {
+            // For enum variants, fill defaults in the variant's fields
+            // First, find the variant in the enum type
+            let enum_type = match &shape.ty {
+                Type::User(UserType::Enum(e)) => *e,
+                _ => return value.clone(),
+            };
+
+            // Find the variant by name
+            let variant = enum_type
+                .variants
+                .iter()
+                .find(|v| v.name == sourced.value.variant);
+
+            let Some(variant) = variant else {
+                return value.clone();
+            };
+
+            // Get the variant's fields (if any)
+            let variant_fields = variant.data.fields;
+
+            // Unit variants have no fields to fill
+            if variant_fields.is_empty() {
+                return value.clone();
+            }
+
+            // Create a new fields map with defaults filled in
+            let mut new_fields = sourced.value.fields.clone();
+
+            for field in variant_fields.iter() {
+                if !new_fields.contains_key(field.name) {
+                    let field_path = if path_prefix.is_empty() {
+                        field.name.to_string()
+                    } else {
+                        format!("{}.{}", path_prefix, field.name)
+                    };
+                    let default_value = get_default_config_value(field, &field_path);
+                    new_fields.insert(field.name.to_string(), default_value);
+                }
+            }
+
+            // Recursively fill defaults in nested values
+            for (key, val) in new_fields.iter_mut() {
+                if let Some(field) = variant_fields.iter().find(|f| f.name == key) {
+                    let field_path = if path_prefix.is_empty() {
+                        key.to_string()
+                    } else {
+                        format!("{}.{}", path_prefix, key)
+                    };
+                    *val = fill_defaults_from_shape_recursive(val, field.shape.get(), &field_path);
+                }
+            }
+
+            ConfigValue::Enum(Sourced {
+                value: crate::config_value::EnumValue {
+                    variant: sourced.value.variant.clone(),
+                    fields: new_fields,
+                },
+                span: sourced.span,
+                provenance: sourced.provenance.clone(),
+            })
+        }
         _ => value.clone(),
     }
 }
@@ -333,6 +395,21 @@ impl core::error::Error for ConfigValueDeserializeError {
     }
 }
 
+impl ConfigValueDeserializeError {
+    /// Get the span associated with this error, if any.
+    pub fn span(&self) -> Option<facet_reflect::Span> {
+        match self {
+            ConfigValueDeserializeError::Deserialize(e) => match e {
+                facet_format::DeserializeError::Reflect { span, .. } => *span,
+                facet_format::DeserializeError::TypeMismatch { span, .. } => *span,
+                facet_format::DeserializeError::UnknownField { span, .. } => *span,
+                facet_format::DeserializeError::MissingField { span, .. } => *span,
+                _ => None,
+            },
+        }
+    }
+}
+
 /// Parser that emits events from a `ConfigValue` tree.
 pub struct ConfigValueParser<'input> {
     /// Stack of values to process.
@@ -357,6 +434,15 @@ enum StackFrame<'input> {
     },
     /// A single value to emit.
     Value(&'input ConfigValue),
+    /// Processing an enum variant - externally tagged format: {"VariantName": {...}}
+    /// Phase 0: emit FieldKey with variant name
+    /// Phase 1: emit variant content (struct with fields, or Unit for unit variants)
+    /// Phase 2: emit StructEnd
+    Enum {
+        variant: &'input str,
+        fields: Vec<(&'input str, &'input ConfigValue)>,
+        phase: u8,
+    },
 }
 
 impl<'input> ConfigValueParser<'input> {
@@ -447,6 +533,51 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                         return Ok(Some(ParseEvent::SequenceEnd));
                     }
                 }
+                StackFrame::Enum {
+                    variant,
+                    fields,
+                    phase,
+                } => {
+                    match phase {
+                        0 => {
+                            // Phase 0: emit FieldKey with variant name, then continue to phase 1
+                            self.stack.push(StackFrame::Enum {
+                                variant,
+                                fields,
+                                phase: 1,
+                            });
+                            return Ok(Some(ParseEvent::FieldKey(FieldKey::new(
+                                variant,
+                                FieldLocationHint::KeyValue,
+                            ))));
+                        }
+                        1 => {
+                            // Phase 1: emit variant content
+                            // Push phase 2 to emit StructEnd after content
+                            self.stack.push(StackFrame::Enum {
+                                variant,
+                                fields: Vec::new(), // no longer needed
+                                phase: 2,
+                            });
+
+                            if fields.is_empty() {
+                                // Unit variant: emit Unit scalar
+                                return Ok(Some(ParseEvent::Scalar(ScalarValue::Unit)));
+                            } else {
+                                // Struct variant: emit StructStart and push Object processing
+                                self.stack.push(StackFrame::Object {
+                                    entries: fields,
+                                    index: 0,
+                                });
+                                return Ok(Some(ParseEvent::StructStart(ContainerKind::Object)));
+                            }
+                        }
+                        2 | _ => {
+                            // Phase 2: emit outer StructEnd (the enum wrapper)
+                            return Ok(Some(ParseEvent::StructEnd));
+                        }
+                    }
+                }
             }
         }
     }
@@ -467,6 +598,12 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
     fn begin_probe(&mut self) -> Result<Self::Probe<'_>, Self::Error> {
         // We don't need probing for ConfigValue (it's already parsed)
         Ok(EmptyProbe)
+    }
+
+    fn current_span(&self) -> Option<Span> {
+        // Return the last span we saw - this is a "virtual" span that maps back
+        // to the real source location via the SpanRegistry
+        self.last_span
     }
 }
 
@@ -538,19 +675,23 @@ impl<'input> ConfigValueParser<'input> {
                 self.update_span(sourced);
 
                 // Collect entries as borrowed slices from the enum's fields
-                let entries: Vec<(&str, &ConfigValue)> = sourced
+                let fields: Vec<(&str, &ConfigValue)> = sourced
                     .value
                     .fields
                     .iter()
                     .map(|(k, v)| (k.as_str(), v))
                     .collect();
 
-                // Push object processing for enum fields
-                self.stack.push(StackFrame::Object { entries, index: 0 });
+                // Push enum processing frame (phase 0)
+                // This emits: StructStart, FieldKey(variant), content, StructEnd
+                // which is the externally-tagged format: {"VariantName": {...}}
+                self.stack.push(StackFrame::Enum {
+                    variant: &sourced.value.variant,
+                    fields,
+                    phase: 0,
+                });
 
-                // Emit variant selection event
-                // TODO: This needs to emit the variant name somehow for proper enum deserialization
-                // For now, emit as a struct - the deserializer will need to handle enum selection
+                // Emit the outer struct start (the enum wrapper)
                 Ok(ParseEvent::StructStart(ContainerKind::Object))
             }
             ConfigValue::Missing(info) => {

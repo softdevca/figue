@@ -167,6 +167,10 @@ pub struct Subcommand {
     /// Derived from enum variant name, or `#[facet(rename = "...")]`.
     name: String,
 
+    /// Original Rust variant name (PascalCase).
+    /// Used for deserialization with facet-format which expects the actual variant name.
+    variant_name: String,
+
     /// Documentation for this subcommand.
     docs: Docs,
 
@@ -449,9 +453,15 @@ impl ArgSchema {
 }
 
 impl Subcommand {
-    /// Get the subcommand name.
+    /// Get the subcommand name (CLI name, kebab-case or renamed).
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Get the original Rust variant name (PascalCase).
+    /// This is what facet-format expects for deserialization.
+    pub fn variant_name(&self) -> &str {
+        &self.variant_name
     }
 
     /// Get the arguments schema for this subcommand.

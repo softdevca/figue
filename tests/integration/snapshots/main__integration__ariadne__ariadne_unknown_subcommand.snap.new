@@ -1,9 +1,10 @@
 ---
 source: tests/integration/ariadne.rs
+assertion_line: 100
 expression: ariadne_output
 ---
 Error: unexpected argument: buidl
-   ╭─[ <unknown>:1:1 ]
+   ╭─[ <cli>:1:1 ]
    │
  1 │ buidl
    │ ──┬──  

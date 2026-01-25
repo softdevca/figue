@@ -1,0 +1,12 @@
+---
+source: tests/integration/err.rs
+assertion_line: 103
+expression: "$crate :: common :: strip_ansi(& err.to_string())"
+---
+Error: failed to parse "-10" as usize
+   ╭─[ <cli>:1:9 ]
+   │
+ 1 │ --count -10
+   │         ─┬─  
+   │          ╰─── failed to parse "-10" as usize
+───╯

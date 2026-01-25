@@ -31,8 +31,9 @@ use crate::help::generate_help_for_shape;
 use crate::layers::{cli::parse_cli, env::parse_env, file::parse_file};
 use crate::merge::merge_layers;
 use crate::path::Path;
-use crate::provenance::{FileResolution, Override, Provenance};
+use crate::provenance::{ConfigFile, FileResolution, Override, Provenance};
 use crate::span::Span;
+use crate::span_registry::{SpanRegistry, assign_virtual_spans};
 use facet_core::Facet;
 
 /// Diagnostics for a single layer.
@@ -104,6 +105,21 @@ impl<T: Facet<'static>> Driver<T> {
         let mut layers = ConfigLayers::default();
         let mut all_diagnostics = Vec::new();
         let mut file_resolution = None;
+
+        // Get CLI args source for Ariadne error display
+        let cli_args_source = self
+            .config
+            .cli_config
+            .as_ref()
+            .map(|c| {
+                let args = c.args().join(" ");
+                if args.is_empty() {
+                    "<no arguments>".to_string()
+                } else {
+                    args
+                }
+            })
+            .unwrap_or_else(|| "<no arguments>".to_string());
 
         // Phase 1: Parse each layer
         // Priority order (lowest to highest): defaults < file < env < cli
@@ -210,6 +226,8 @@ impl<T: Facet<'static>> Driver<T> {
                     layers,
                     file_resolution,
                     overrides: Vec::new(),
+                    cli_args_source,
+                    source_name: "<cli>".to_string(),
                 },
             });
         }
@@ -228,21 +246,40 @@ impl<T: Facet<'static>> Driver<T> {
         let merged = merge_layers(values_to_merge);
         let overrides = merged.overrides;
 
-        // Phase 3: Deserialize into T
-        let value: T = match from_config_value(&merged.value) {
+        // Phase 3: Assign virtual spans and deserialize into T
+        // The span registry maps virtual spans back to real source locations
+        let (value_with_virtual_spans, span_registry) = assign_virtual_spans(&merged.value);
+
+        let value: T = match from_config_value(&value_with_virtual_spans) {
             Ok(v) => v,
             Err(e) => {
+                // Extract virtual span from the error, then look up real location
+                let (span, source_name, source_contents) = if let Some(virtual_span) = e.span() {
+                    if let Some(entry) = span_registry.lookup_by_offset(virtual_span.offset) {
+                        let real_span = Span::new(entry.real_span.offset, entry.real_span.len);
+                        let (name, contents) =
+                            get_source_for_provenance(&entry.provenance, &cli_args_source);
+                        (Some(real_span), name, contents)
+                    } else {
+                        (None, "<unknown>".to_string(), cli_args_source.clone())
+                    }
+                } else {
+                    (None, "<unknown>".to_string(), cli_args_source.clone())
+                };
+
                 return Err(DriverError::Failed {
                     report: DriverReport {
                         diagnostics: vec![Diagnostic {
-                            message: format!("Deserialization failed: {}", e),
+                            message: e.to_string(),
                             path: None,
-                            span: None,
+                            span,
                             severity: Severity::Error,
                         }],
                         layers,
                         file_resolution,
                         overrides,
+                        cli_args_source: source_contents,
+                        source_name,
                     },
                 });
             }
@@ -255,8 +292,20 @@ impl<T: Facet<'static>> Driver<T> {
                 layers,
                 file_resolution,
                 overrides,
+                cli_args_source,
+                source_name: "<cli>".to_string(),
             },
         })
+    }
+}
+
+/// Get the source name and contents for a provenance.
+fn get_source_for_provenance(provenance: &Provenance, cli_args_source: &str) -> (String, String) {
+    match provenance {
+        Provenance::Cli { .. } => ("<cli>".to_string(), cli_args_source.to_string()),
+        Provenance::Env { var, value } => (format!("${}", var), value.clone()),
+        Provenance::File { file, .. } => (file.path.to_string(), file.contents.clone()),
+        Provenance::Default => ("<default>".to_string(), String::new()),
     }
 }
 
@@ -329,6 +378,10 @@ impl<T> DriverResultExt<T> for DriverResult<T> {
                 eprintln!("{}", report.render_pretty());
                 std::process::exit(1);
             }
+            Err(DriverError::Builder { error }) => {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -337,7 +390,7 @@ impl<T> DriverResultExt<T> for DriverResult<T> {
 ///
 /// The report should be pretty-renderable and capture all diagnostics,
 /// plus optional supporting metadata (merge overrides, spans, etc).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct DriverReport {
     /// Diagnostics emitted by the driver.
     pub diagnostics: Vec<Diagnostic>,
@@ -347,19 +400,88 @@ pub struct DriverReport {
     pub file_resolution: Option<FileResolution>,
     /// Records of values that were overridden during merge.
     pub overrides: Vec<Override>,
+    /// Source contents for error display (CLI args, env var value, or file contents).
+    pub cli_args_source: String,
+    /// Name of the source for error display (e.g., "<cli>", "$VAR", "config.toml").
+    pub source_name: String,
+}
+
+/// A simple cache that wraps a Source and provides a display name.
+struct NamedSource {
+    name: String,
+    source: ariadne::Source<String>,
+}
+
+impl ariadne::Cache<()> for NamedSource {
+    type Storage = String;
+
+    fn fetch(&mut self, _: &()) -> Result<&ariadne::Source<Self::Storage>, impl std::fmt::Debug> {
+        Ok::<_, std::convert::Infallible>(&self.source)
+    }
+
+    fn display<'a>(&self, _: &'a ()) -> Option<impl std::fmt::Display + 'a> {
+        Some(self.name.clone())
+    }
 }
 
 impl DriverReport {
-    /// Render the report for user-facing output.
+    /// Render the report using Ariadne for pretty error display.
     pub fn render_pretty(&self) -> String {
-        let mut out = String::new();
-        for diagnostic in &self.diagnostics {
-            let _ = core::fmt::write(
-                &mut out,
-                format_args!("{}: {}\n", diagnostic.severity.as_str(), diagnostic.message),
-            );
+        use ariadne::{Color, Label, Report, ReportKind, Source};
+
+        if self.diagnostics.is_empty() {
+            return String::new();
         }
-        out
+
+        let mut output = Vec::new();
+        let mut cache = NamedSource {
+            name: self.source_name.clone(),
+            source: Source::from(self.cli_args_source.clone()),
+        };
+
+        for diagnostic in &self.diagnostics {
+            let span = diagnostic
+                .span
+                .map(|s| s.start..(s.start + s.len))
+                .unwrap_or(0..0);
+
+            let report_kind = match diagnostic.severity {
+                Severity::Error => ReportKind::Error,
+                Severity::Warning => ReportKind::Warning,
+                Severity::Note => ReportKind::Advice,
+            };
+
+            let color = match diagnostic.severity {
+                Severity::Error => Color::Red,
+                Severity::Warning => Color::Yellow,
+                Severity::Note => Color::Cyan,
+            };
+
+            let report = Report::build(report_kind, span.clone())
+                .with_message(&diagnostic.message)
+                .with_label(
+                    Label::new(span)
+                        .with_message(&diagnostic.message)
+                        .with_color(color),
+                )
+                .finish();
+
+            report.write(&mut cache, &mut output).ok();
+        }
+
+        String::from_utf8(output).unwrap_or_else(|_| "error rendering diagnostics".to_string())
+    }
+}
+
+impl core::fmt::Display for DriverReport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.render_pretty())
+    }
+}
+
+impl core::fmt::Debug for DriverReport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.render_pretty())
     }
 }
 
@@ -428,6 +550,12 @@ fn extract_shell_from_value(value: &ConfigValue) -> Option<Shell> {
 /// Not all variants are "errors" in the traditional sense - Help, Completions,
 /// and Version are successful operations that just don't produce a config value.
 pub enum DriverError {
+    /// Builder failed (e.g., schema validation, file not found) - exit code 1
+    Builder {
+        /// The builder error
+        error: crate::builder::BuilderError,
+    },
+
     /// Parsing or validation failed - exit code 1
     Failed {
         /// Report containing all diagnostics
@@ -457,6 +585,7 @@ impl DriverError {
     /// Returns the appropriate exit code for this error.
     pub fn exit_code(&self) -> i32 {
         match self {
+            DriverError::Builder { .. } => 1,
             DriverError::Failed { .. } => 1,
             DriverError::Help { .. } => 0,
             DriverError::Completions { .. } => 0,
@@ -468,12 +597,26 @@ impl DriverError {
     pub fn is_success(&self) -> bool {
         self.exit_code() == 0
     }
+
+    /// Returns true if this is a help request.
+    pub fn is_help(&self) -> bool {
+        matches!(self, DriverError::Help { .. })
+    }
+
+    /// Returns the help text if this is a help request.
+    pub fn help_text(&self) -> Option<&str> {
+        match self {
+            DriverError::Help { text } => Some(text),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for DriverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DriverError::Failed { report } => write!(f, "{}", report.render_pretty()),
+            DriverError::Builder { error } => write!(f, "{}", error),
+            DriverError::Failed { report } => write!(f, "{}", report),
             DriverError::Help { text } => write!(f, "{}", text),
             DriverError::Completions { script } => write!(f, "{}", script),
             DriverError::Version { text } => write!(f, "{}", text),

@@ -1,7 +1,32 @@
+/// Strip ANSI escape codes from a string for snapshot testing
+pub fn strip_ansi(s: &str) -> String {
+    // Simple regex-free ANSI stripping: remove ESC [ ... m sequences
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip ESC
+            if chars.peek() == Some(&'[') {
+                chars.next(); // Skip '['
+                // Skip until 'm'
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Do snapshot testing for a diagnostic error
 #[macro_export]
 macro_rules! assert_diag_snapshot {
     ($err:expr) => {
-        insta::assert_snapshot!($err.to_string())
+        insta::assert_snapshot!($crate::common::strip_ansi(&$err.to_string()))
     };
 }

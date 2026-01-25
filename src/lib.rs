@@ -14,7 +14,7 @@ pub(crate) mod config_format;
 pub(crate) mod config_value;
 pub(crate) mod config_value_parser;
 pub(crate) mod diagnostics;
-pub(crate) mod driver;
+pub mod driver;
 pub(crate) mod dump;
 // pub(crate) mod env;
 pub(crate) mod error;
@@ -27,6 +27,7 @@ pub(crate) mod provenance;
 pub(crate) mod reflection;
 pub(crate) mod schema;
 pub(crate) mod span;
+pub(crate) mod span_registry;
 
 use facet_core::Facet;
 
@@ -43,7 +44,7 @@ pub use help::{HelpConfig, generate_help, generate_help_for_shape};
 ///
 /// This is a convenience function for CLI-only parsing (no env vars, no config files).
 /// For layered configuration, use `builder()` instead.
-pub fn from_std_args<T: Facet<'static>>() -> Result<T, error::ArgsErrorWithInput> {
+pub fn from_std_args<T: Facet<'static>>() -> Result<T, driver::DriverError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     from_slice(&args_ref)
@@ -53,59 +54,16 @@ pub fn from_std_args<T: Facet<'static>>() -> Result<T, error::ArgsErrorWithInput
 ///
 /// This is a convenience function for CLI-only parsing (no env vars, no config files).
 /// For layered configuration, use `builder()` instead.
-pub fn from_slice<T: Facet<'static>>(args: &[&str]) -> Result<T, error::ArgsErrorWithInput> {
+pub fn from_slice<T: Facet<'static>>(args: &[&str]) -> Result<T, driver::DriverError> {
     use crate::driver::{Driver, DriverError};
 
     let config = builder::<T>()
-        .map_err(|e| error::ArgsErrorWithInput {
-            inner: error::ArgsError::new(
-                error::ArgsErrorKind::ReflectError(facet_reflect::ReflectError::OperationFailed {
-                    shape: T::SHAPE,
-                    operation: "schema error",
-                }),
-                crate::span::Span::new(0, 0),
-            ),
-            flattened_args: format!("{}: {}", args.join(" "), e),
-        })?
+        .map_err(|e| DriverError::Builder { error: e })?
         .cli(|cli| cli.args(args.iter().map(|s| s.to_string())))
         .build();
 
     let driver = Driver::new(config);
-
-    match driver.run() {
-        Ok(output) => Ok(output.value),
-        Err(DriverError::Help { text }) => Err(error::ArgsErrorWithInput {
-            inner: error::ArgsError::new(
-                error::ArgsErrorKind::HelpRequested { help_text: text },
-                crate::span::Span::new(0, 0),
-            ),
-            flattened_args: args.join(" "),
-        }),
-        Err(DriverError::Version { text }) => Err(error::ArgsErrorWithInput {
-            inner: error::ArgsError::new(
-                error::ArgsErrorKind::VersionRequested { version_text: text },
-                crate::span::Span::new(0, 0),
-            ),
-            flattened_args: args.join(" "),
-        }),
-        Err(DriverError::Completions { script }) => Err(error::ArgsErrorWithInput {
-            inner: error::ArgsError::new(
-                error::ArgsErrorKind::CompletionsRequested { script },
-                crate::span::Span::new(0, 0),
-            ),
-            flattened_args: args.join(" "),
-        }),
-        Err(DriverError::Failed { report }) => Err(error::ArgsErrorWithInput {
-            inner: error::ArgsError::new(
-                error::ArgsErrorKind::ReflectError(facet_reflect::ReflectError::OperationFailed {
-                    shape: T::SHAPE,
-                    operation: "driver failed",
-                }),
-                crate::span::Span::new(0, 0),
-            ),
-            flattened_args: format!("{}: {:?}", args.join(" "), report),
-        }),
-    }
+    driver.run().map(|output| output.value)
 }
 
 /// Standard CLI builtins that can be flattened into your Args struct.

@@ -131,10 +131,25 @@ struct ParseContext<'a> {
     counted: IndexMap<String, CountedAccumulator, RandomState>,
     /// Whether to error on unknown arguments
     strict: bool,
+    /// Byte offset where each argument starts in the flattened string (args joined by spaces)
+    arg_offsets: Vec<usize>,
 }
 
 impl<'a> ParseContext<'a> {
     fn new(args: &'a [&'a str], schema: &'a Schema, strict: bool) -> Self {
+        // Compute byte offsets for each argument in the flattened string
+        // When args are joined with spaces: "arg0 arg1 arg2"
+        // arg0 starts at 0, arg1 starts at len(arg0)+1, etc.
+        let mut arg_offsets = Vec::with_capacity(args.len());
+        let mut offset = 0;
+        for (i, arg) in args.iter().enumerate() {
+            arg_offsets.push(offset);
+            offset += arg.len();
+            if i < args.len() - 1 {
+                offset += 1; // space separator
+            }
+        }
+
         Self {
             args,
             index: 0,
@@ -144,7 +159,27 @@ impl<'a> ParseContext<'a> {
             positional_only: false,
             counted: IndexMap::default(),
             strict,
+            arg_offsets,
         }
+    }
+
+    /// Get the span (byte offset and length) for argument at the given index.
+    fn span_for_arg(&self, arg_index: usize) -> facet_reflect::Span {
+        let offset = self.arg_offsets.get(arg_index).copied().unwrap_or(0);
+        let len = self.args.get(arg_index).map(|s| s.len()).unwrap_or(0);
+        facet_reflect::Span::new(offset, len)
+    }
+
+    /// Get the span for the current argument.
+    fn current_span(&self) -> facet_reflect::Span {
+        self.span_for_arg(self.index)
+    }
+
+    /// Get a span covering a substring within the current argument.
+    /// `sub_offset` is the byte offset within the argument, `sub_len` is the length.
+    fn span_within_current(&self, sub_offset: usize, sub_len: usize) -> facet_reflect::Span {
+        let base = self.arg_offsets.get(self.index).copied().unwrap_or(0);
+        facet_reflect::Span::new(base + sub_offset, sub_len)
     }
 
     fn parse(&mut self) {
@@ -269,20 +304,24 @@ impl<'a> ParseContext<'a> {
                     );
                 } else if is_last {
                     // Non-bool flag at end: look for value
+                    let flag_span = self.current_span(); // Save span before incrementing
                     self.index += 1;
                     if self.index < self.args.len() {
+                        let value_span = self.current_span();
                         let value_str = self.args[self.index];
                         let prov_arg = format!("-{}", ch);
-                        let value = self.parse_value_string(value_str, &prov_arg);
+                        let value = self.parse_value_string(value_str, &prov_arg, value_span);
                         self.insert_at_path(arg_schema.target_path(), value);
                     } else {
-                        self.emit_error(format!("flag -{} requires a value", ch));
+                        self.emit_error_at(format!("flag -{} requires a value", ch), flag_span);
                     }
                 } else {
                     // Non-bool flag with attached value: -p8080
+                    // Span for attached value is within the current arg
                     let rest: String = chars[i + 1..].iter().collect();
+                    let value_span = self.span_within_current(i + 1, rest.len());
                     let prov_arg = format!("-{}", ch);
-                    let value = self.parse_value_string(&rest, &prov_arg);
+                    let value = self.parse_value_string(&rest, &prov_arg, value_span);
                     self.insert_at_path(arg_schema.target_path(), value);
                     break; // Consumed rest of chars
                 }
@@ -322,23 +361,28 @@ impl<'a> ParseContext<'a> {
             self.index += 1;
         } else {
             // Non-bool: need a value
-            let value_str = if let Some(v) = inline_value {
+            let flag_span = self.current_span(); // Save span before incrementing
+            let (value_str, value_span) = if let Some(v) = inline_value {
+                // --flag=value: value starts after the '='
+                let eq_pos = arg.find('=').unwrap_or(0) + 1;
+                let span = self.span_within_current(eq_pos, v.len());
                 self.index += 1;
-                v
+                (v, span)
             } else {
                 self.index += 1;
                 if self.index < self.args.len() {
+                    let span = self.current_span();
                     let v = self.args[self.index];
                     self.index += 1;
-                    v
+                    (v, span)
                 } else {
-                    self.emit_error(format!("flag {} requires a value", arg));
+                    self.emit_error_at(format!("flag {} requires a value", arg), flag_span);
                     return;
                 }
             };
 
             let prov_arg = arg.split('=').next().unwrap_or(arg);
-            let value = self.parse_value_string(value_str, prov_arg);
+            let value = self.parse_value_string(value_str, prov_arg, value_span);
             self.insert_at_path(schema.target_path(), value);
         }
     }
@@ -355,23 +399,28 @@ impl<'a> ParseContext<'a> {
         let parts: Vec<&str> = path.split('.').collect();
 
         // Get the value
-        let value_str = if let Some(v) = inline_value {
+        let flag_span = self.current_span(); // Save span before incrementing
+        let (value_str, value_span) = if let Some(v) = inline_value {
+            // --config.key=value: value starts after the '='
+            let eq_pos = flag_name.len() + 3 + 1; // "--" + flag_name + "="
+            let span = self.span_within_current(eq_pos, v.len());
             self.index += 1;
-            v
+            (v, span)
         } else {
             self.index += 1;
             if self.index < self.args.len() {
+                let span = self.current_span();
                 let v = self.args[self.index];
                 self.index += 1;
-                v
+                (v, span)
             } else {
-                self.emit_error(format!("flag --{} requires a value", flag_name));
+                self.emit_error_at(format!("flag --{} requires a value", flag_name), flag_span);
                 return;
             }
         };
 
         let prov_arg = format!("--{}", flag_name);
-        let value = self.parse_value_string(value_str, &prov_arg);
+        let value = self.parse_value_string(value_str, &prov_arg, value_span);
 
         // Insert into nested config structure
         self.insert_config_value(config_field_name, &parts, value);
@@ -407,9 +456,11 @@ impl<'a> ParseContext<'a> {
             self.index += 1;
             let fields = self.parse_subcommand_args(subcommand);
 
+            // Use the original Rust variant name for deserialization
+            // (facet-format expects "Build", not "build")
             let enum_value = ConfigValue::Enum(Sourced {
                 value: EnumValue {
-                    variant: arg_kebab,
+                    variant: subcommand.variant_name().to_string(),
                     fields,
                 },
                 span: None,
@@ -456,7 +507,8 @@ impl<'a> ParseContext<'a> {
                 continue;
             }
 
-            let value = self.parse_value_string(arg, arg);
+            let value_span = self.current_span();
+            let value = self.parse_value_string(arg, arg, value_span);
             self.insert_at_path(schema.target_path(), value);
             self.index += 1;
             return true;
@@ -465,14 +517,19 @@ impl<'a> ParseContext<'a> {
         false
     }
 
-    fn parse_value_string(&self, s: &str, arg_name: &str) -> ConfigValue {
+    fn parse_value_string(
+        &self,
+        s: &str,
+        arg_name: &str,
+        span: facet_reflect::Span,
+    ) -> ConfigValue {
         let prov = Some(Provenance::cli(arg_name, s));
 
         // Keep values as strings - type coercion happens during deserialization
         // based on the schema's expected types. This is consistent with the env layer.
         ConfigValue::String(Sourced {
             value: s.to_string(),
-            span: None,
+            span: Some(span),
             provenance: prov,
         })
     }
@@ -525,11 +582,17 @@ impl<'a> ParseContext<'a> {
         }
     }
 
+    /// Emit an error diagnostic for the current argument.
     fn emit_error(&mut self, message: String) {
+        self.emit_error_at(message, self.current_span());
+    }
+
+    /// Emit an error diagnostic at a specific span.
+    fn emit_error_at(&mut self, message: String, span: facet_reflect::Span) {
         self.diagnostics.push(Diagnostic {
             message,
             path: None,
-            span: None,
+            span: Some(crate::span::Span::new(span.offset, span.len)),
             severity: Severity::Error,
         });
     }
@@ -1057,7 +1120,8 @@ mod tests {
     fn test_subcommand_basic() {
         assert_parses_to::<ArgsWithSubcommand>(
             &["build"],
-            cv::object([("command", cv::enumv("build", []))]),
+            // Variant name is PascalCase for facet-format deserialization
+            cv::object([("command", cv::enumv("Build", []))]),
         );
     }
 
@@ -1067,7 +1131,8 @@ mod tests {
             &["build", "--release"],
             cv::object([(
                 "command",
-                cv::enumv("build", [("release", cv::bool(true, "--release"))]),
+                // Variant name is PascalCase for facet-format deserialization
+                cv::enumv("Build", [("release", cv::bool(true, "--release"))]),
             )]),
         );
     }
@@ -1080,7 +1145,8 @@ mod tests {
                 ("verbose", cv::bool(true, "--verbose")),
                 (
                     "command",
-                    cv::enumv("build", [("release", cv::bool(true, "--release"))]),
+                    // Variant name is PascalCase for facet-format deserialization
+                    cv::enumv("Build", [("release", cv::bool(true, "--release"))]),
                 ),
             ]),
         );
