@@ -19,13 +19,17 @@ rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
 [dependencies]
 camino = "1.1"
-facet = { path = "../facet/facet", features = ["indexmap", "camino", "net"] }
-facet-core = { path = "../facet/facet-core" }
-facet-format = { path = "../facet/facet-format" }
-facet-json = { path = "../facet/facet-json" }
-facet-reflect = { path = "../facet/facet-reflect" }
-facet-pretty = { path = "../facet/facet-pretty" }
-facet-error = { path = "../facet/facet-error" }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43", features = [
+  "indexmap",
+  "camino",
+  "net",
+] }
+facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-format = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-reflect = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-pretty = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-error = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
 heck = "0.5.0"
 indexmap = "2"
 owo-colors = "4"
@@ -35,13 +39,21 @@ unicode-width = "0.2.2"
 strip-ansi-escapes = "0.2.1"
 
 [dev-dependencies]
-facet-format = { path = "../facet/facet-format", features = ["tracing"] }
-facet-json = { path = "../facet/facet-json", features = ["tracing"] }
-facet-reflect = { path = "../facet/facet-reflect", features = ["tracing"] }
-facet = { path = "../facet/facet", features = ["all-impls"] }
-facet-showcase = { path = "../facet/facet-showcase" }
-facet-solver = { path = "../facet/facet-solver" }
-facet-testhelpers = { path = "../facet/facet-testhelpers" }
+facet-format = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43", features = [
+  "tracing",
+] }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43", features = [
+  "tracing",
+] }
+facet-reflect = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43", features = [
+  "tracing",
+] }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43", features = [
+  "all-impls",
+] }
+facet-showcase = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-solver = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
+facet-testhelpers = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
 insta = "1"
 tempfile = "3"
 
@@ -53,3 +65,16 @@ tracing = ["facet-reflect/tracing", "facet-json/tracing", "facet-format/tracing"
 
 [[example]]
 name = "args_showcase"
+
+# Uncomment for local development with facet
+# [patch."https://github.com/facet-rs/facet"]
+# facet = { path = "../facet/facet" }
+# facet-core = { path = "../facet/facet-core" }
+# facet-format = { path = "../facet/facet-format" }
+# facet-json = { path = "../facet/facet-json" }
+# facet-reflect = { path = "../facet/facet-reflect" }
+# facet-pretty = { path = "../facet/facet-pretty" }
+# facet-error = { path = "../facet/facet-error" }
+# facet-showcase = { path = "../facet/facet-showcase" }
+# facet-solver = { path = "../facet/facet-solver" }
+# facet-testhelpers = { path = "../facet/facet-testhelpers" }
