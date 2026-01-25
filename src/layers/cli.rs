@@ -16,11 +16,82 @@ use std::hash::RandomState;
 use heck::{ToKebabCase, ToSnakeCase};
 use indexmap::IndexMap;
 
-use crate::builder::CliConfig;
 use crate::config_value::{ConfigValue, EnumValue, Sourced};
 use crate::driver::{Diagnostic, LayerOutput, Severity};
 use crate::provenance::Provenance;
 use crate::schema::{ArgKind, ArgLevelSchema, ArgSchema, Schema, Subcommand};
+
+// ============================================================================
+// CliConfig
+// ============================================================================
+
+/// Configuration for CLI argument parsing.
+#[derive(Debug, Clone, Default)]
+pub struct CliConfig {
+    /// Raw CLI arguments.
+    args: Vec<String>,
+    /// Whether to error on unknown arguments.
+    strict: bool,
+}
+
+impl CliConfig {
+    /// Get the CLI arguments.
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    /// Check if strict mode is enabled.
+    pub fn strict(&self) -> bool {
+        self.strict
+    }
+}
+
+/// Builder for CLI configuration.
+#[derive(Debug, Default)]
+pub struct CliConfigBuilder {
+    config: CliConfig,
+}
+
+impl CliConfigBuilder {
+    /// Create a new CLI config builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the CLI arguments to parse.
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.config.args = args.into_iter().map(|s| s.into()).collect();
+        self
+    }
+
+    /// Set CLI arguments from OsString iterator (e.g., std::env::args_os()).
+    pub fn args_os<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.config.args = args
+            .into_iter()
+            .filter_map(|s| s.as_ref().to_str().map(|s| s.to_string()))
+            .collect();
+        self
+    }
+
+    /// Enable strict mode - error on unknown arguments.
+    pub fn strict(mut self) -> Self {
+        self.config.strict = true;
+        self
+    }
+
+    /// Build the CLI configuration.
+    pub fn build(self) -> CliConfig {
+        self.config
+    }
+}
 
 /// Parse CLI arguments using the schema, returning a LayerOutput.
 ///
@@ -590,7 +661,7 @@ mod tests {
 
     /// Build a CliConfig from a slice of string slices (for tests)
     fn cli_config(args: &[&str]) -> CliConfig {
-        crate::builder::CliConfigBuilder::new()
+        CliConfigBuilder::new()
             .args(args.iter().map(|s| s.to_string()))
             .build()
     }

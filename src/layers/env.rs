@@ -44,9 +44,147 @@ use indexmap::IndexMap;
 
 use crate::config_value::{ConfigValue, Sourced};
 use crate::driver::{Diagnostic, LayerOutput, Severity, UnusedKey};
-use crate::env::{EnvConfig, EnvSource};
 use crate::provenance::Provenance;
 use crate::schema::{ConfigStructSchema, ConfigValueSchema, Schema};
+
+// ============================================================================
+// EnvSource trait
+// ============================================================================
+
+/// Trait for abstracting over environment variable sources.
+///
+/// This allows testing without modifying the actual environment.
+pub trait EnvSource {
+    /// Get the value of an environment variable by name.
+    fn get(&self, name: &str) -> Option<String>;
+
+    /// Iterate over all environment variables.
+    fn vars(&self) -> Box<dyn Iterator<Item = (String, String)> + '_>;
+}
+
+/// Environment source that reads from the actual process environment.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StdEnv;
+
+impl EnvSource for StdEnv {
+    fn get(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+
+    fn vars(&self) -> Box<dyn Iterator<Item = (String, String)> + '_> {
+        Box::new(std::env::vars())
+    }
+}
+
+/// Environment source backed by a map (for testing).
+#[derive(Debug, Clone, Default)]
+pub struct MockEnv {
+    vars: IndexMap<String, String, std::hash::RandomState>,
+}
+
+impl MockEnv {
+    /// Create a new empty mock environment.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a mock environment from an iterator of key-value pairs.
+    pub fn from_pairs<I, K, V>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            vars: iter
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        }
+    }
+
+    /// Set an environment variable.
+    pub fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.vars.insert(name.into(), value.into());
+    }
+}
+
+impl EnvSource for MockEnv {
+    fn get(&self, name: &str) -> Option<String> {
+        self.vars.get(name).cloned()
+    }
+
+    fn vars(&self) -> Box<dyn Iterator<Item = (String, String)> + '_> {
+        Box::new(self.vars.iter().map(|(k, v)| (k.clone(), v.clone())))
+    }
+}
+
+// ============================================================================
+// EnvConfig
+// ============================================================================
+
+/// Configuration for environment variable parsing.
+#[derive(Debug, Clone)]
+pub struct EnvConfig {
+    /// The prefix to look for (e.g., `MYAPP`). For example, configuration variable
+    /// foo.bar will be overrideable via `MYAPP__FOO__BAR`.
+    pub prefix: String,
+
+    /// Whether to error out if any env vars that start with `MYAPP__` should be reported
+    /// as errors and stop the program entirely (to try and catch typos)
+    pub strict: bool,
+}
+
+impl EnvConfig {
+    /// Create a new EnvConfig with the given prefix.
+    pub fn new(prefix: impl Into<String>) -> Self {
+        Self {
+            prefix: prefix.into(),
+            strict: false,
+        }
+    }
+
+    /// Enable strict mode.
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+}
+
+/// Builder for environment variable configuration.
+#[derive(Debug, Default)]
+pub struct EnvConfigBuilder {
+    prefix: String,
+    strict: bool,
+}
+
+impl EnvConfigBuilder {
+    /// Create a new env config builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the environment variable prefix.
+    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = prefix.into();
+        self
+    }
+
+    /// Enable strict mode - error on unknown env vars with the prefix.
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// Build the env configuration.
+    pub fn build(self) -> EnvConfig {
+        let mut config = EnvConfig::new(self.prefix);
+        if self.strict {
+            config = config.strict();
+        }
+        config
+    }
+}
 
 /// Parse environment variables using the schema, returning a LayerOutput.
 ///
@@ -402,10 +540,8 @@ fn insert_nested(
 mod tests {
     use facet::Facet;
 
-    use crate::builder::EnvConfigBuilder;
     use crate::config_value::ConfigValue;
     use crate::driver::Severity;
-    use crate::env::{EnvConfig, MockEnv};
     use crate::schema::Schema;
 
     use super::*;

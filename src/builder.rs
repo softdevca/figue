@@ -18,9 +18,12 @@ use facet_reflect::{Partial, ReflectError};
 use crate::{
     config_format::{ConfigFormat, ConfigFormatError},
     config_value::ConfigValue,
-    env::{EnvConfig, EnvSource, StdEnv},
     help::HelpConfig,
-    layers::file::FormatRegistry,
+    layers::{
+        cli::{CliConfig, CliConfigBuilder},
+        env::{EnvConfig, EnvConfigBuilder, EnvSource, StdEnv},
+        file::FormatRegistry,
+    },
     provenance::{ConfigResult, FilePathStatus, FileResolution, Provenance},
     schema::{Schema, error::SchemaError},
 };
@@ -235,8 +238,9 @@ impl<T> ConfigBuilder<T> {
         let mut root = IndexMap::default();
         let mut i = 0;
 
-        while i < cli_config.args.len() {
-            let arg = &cli_config.args[i];
+        let args = cli_config.args();
+        while i < args.len() {
+            let arg = &args[i];
 
             if let Some(flag) = arg.strip_prefix("--") {
                 if flag.is_empty() {
@@ -249,13 +253,13 @@ impl<T> ConfigBuilder<T> {
                     let parts: Vec<&str> = flag.split('.').collect();
                     // Get the value from the next argument
                     i += 1;
-                    if i >= cli_config.args.len() {
+                    if i >= args.len() {
                         return Err(BuilderError::CliParse(format!(
                             "Missing value for --{}",
                             flag
                         )));
                     }
-                    let value_str = &cli_config.args[i];
+                    let value_str = &args[i];
                     let arg_name = format!("--{}", flag);
                     let value = parse_cli_value(value_str, &arg_name);
                     insert_nested_value(&mut root, &parts, value);
@@ -264,13 +268,12 @@ impl<T> ConfigBuilder<T> {
                     let key = flag.to_snake_case();
 
                     // Check if next arg looks like a value (not another flag)
-                    let has_value =
-                        i + 1 < cli_config.args.len() && !cli_config.args[i + 1].starts_with('-');
+                    let has_value = i + 1 < args.len() && !args[i + 1].starts_with('-');
 
                     if has_value {
                         i += 1;
                         let arg_name = format!("--{}", flag);
-                        let value = parse_cli_value(&cli_config.args[i], &arg_name);
+                        let value = parse_cli_value(&args[i], &arg_name);
                         root.insert(key, value);
                     } else {
                         // Boolean flag, set to true
@@ -326,78 +329,6 @@ impl<T> ConfigBuilder<T> {
 use crate::config_value::{insert_nested_value, parse_cli_value};
 
 // ============================================================================
-// CLI Configuration
-// ============================================================================
-
-/// Configuration for CLI argument parsing.
-#[derive(Debug, Clone, Default)]
-pub struct CliConfig {
-    /// Raw CLI arguments.
-    args: Vec<String>,
-    /// Whether to error on unknown arguments.
-    strict: bool,
-}
-
-impl CliConfig {
-    /// Get the CLI arguments.
-    pub fn args(&self) -> &[String] {
-        &self.args
-    }
-
-    /// Check if strict mode is enabled.
-    pub fn strict(&self) -> bool {
-        self.strict
-    }
-}
-
-/// Builder for CLI configuration.
-#[derive(Debug, Default)]
-pub struct CliConfigBuilder {
-    config: CliConfig,
-}
-
-impl CliConfigBuilder {
-    /// Create a new CLI config builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the CLI arguments to parse.
-    pub fn args<I, S>(mut self, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.config.args = args.into_iter().map(|s| s.into()).collect();
-        self
-    }
-
-    /// Set CLI arguments from OsString iterator (e.g., std::env::args_os()).
-    pub fn args_os<I, S>(mut self, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<std::ffi::OsStr>,
-    {
-        self.config.args = args
-            .into_iter()
-            .filter_map(|s| s.as_ref().to_str().map(|s| s.to_string()))
-            .collect();
-        self
-    }
-
-    /// Enable strict mode - error on unknown arguments.
-    pub fn strict(mut self) -> Self {
-        self.config.strict = true;
-        self
-    }
-
-    /// Build the CLI configuration.
-    pub fn build(self) -> CliConfig {
-        self.config
-    }
-}
-
-// ============================================================================
 // Help Configuration
 // ============================================================================
 
@@ -440,45 +371,6 @@ impl HelpConfigBuilder {
     /// Build the help configuration.
     fn build(self) -> HelpConfig {
         self.config
-    }
-}
-
-// ============================================================================
-// Environment Configuration
-// ============================================================================
-
-/// Builder for environment variable configuration.
-#[derive(Debug, Default)]
-pub struct EnvConfigBuilder {
-    prefix: String,
-    strict: bool,
-}
-
-impl EnvConfigBuilder {
-    /// Create a new env config builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the environment variable prefix.
-    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.prefix = prefix.into();
-        self
-    }
-
-    /// Enable strict mode - error on unknown env vars with the prefix.
-    pub fn strict(mut self) -> Self {
-        self.strict = true;
-        self
-    }
-
-    /// Build the env configuration.
-    pub fn build(self) -> EnvConfig {
-        let mut config = EnvConfig::new(self.prefix);
-        if self.strict {
-            config = config.strict();
-        }
-        config
     }
 }
 
