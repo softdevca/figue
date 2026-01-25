@@ -70,13 +70,18 @@ pub struct MissingFieldInfo {
     pub doc_comment: Option<String>,
 }
 
+/// Type alias for the object map type used in ConfigValue.
+/// Keys are original field names (from target_path / struct definition).
+/// The ConfigValueParser translates to effective names when emitting events.
+pub type ObjectMap = IndexMap<String, ConfigValue, std::hash::RandomState>;
+
 /// An enum value with variant name and fields.
 #[derive(Debug, Clone, Facet)]
 pub struct EnumValue {
     /// The variant name (kebab-case for CLI, as provided for config files).
     pub variant: String,
     /// Fields of the variant (empty for unit variants).
-    pub fields: IndexMap<String, ConfigValue, std::hash::RandomState>,
+    pub fields: ObjectMap,
 }
 
 /// A configuration value with full provenance tracking at every level.
@@ -97,7 +102,7 @@ pub enum ConfigValue {
     /// An array of values.
     Array(Sourced<Vec<ConfigValue>>),
     /// An object/map of key-value pairs.
-    Object(Sourced<IndexMap<String, ConfigValue, std::hash::RandomState>>),
+    Object(Sourced<ObjectMap>),
     /// An enum value (subcommand or enum field in config).
     Enum(Sourced<EnumValue>),
     /// A missing required field (used for error reporting)
@@ -152,14 +157,7 @@ pub(crate) fn parse_cli_value(s: &str, arg_name: &str) -> ConfigValue {
 }
 
 /// Insert a value into a nested map structure using a dotted path.
-pub(crate) fn insert_nested_value(
-    root: &mut indexmap::IndexMap<String, ConfigValue, std::hash::RandomState>,
-    parts: &[&str],
-    value: ConfigValue,
-) {
-    use indexmap::IndexMap;
-    use std::string::ToString;
-
+pub(crate) fn insert_nested_value(root: &mut ObjectMap, parts: &[&str], value: ConfigValue) {
     if parts.is_empty() {
         return;
     }
@@ -172,7 +170,7 @@ pub(crate) fn insert_nested_value(
         let key = parts[0].to_string();
         let entry = root
             .entry(key)
-            .or_insert_with(|| ConfigValue::Object(Sourced::new(IndexMap::default())));
+            .or_insert_with(|| ConfigValue::Object(Sourced::new(ObjectMap::default())));
 
         // If it's already an object, recurse into it
         if let ConfigValue::Object(obj) = entry {
@@ -180,7 +178,7 @@ pub(crate) fn insert_nested_value(
         }
         // If it's not an object, we have a conflict - replace it with an object
         else {
-            let mut new_map = IndexMap::default();
+            let mut new_map = ObjectMap::default();
             insert_nested_value(&mut new_map, &parts[1..], value);
             *entry = ConfigValue::Object(Sourced::new(new_map));
         }

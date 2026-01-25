@@ -23,3 +23,9 @@ OPTIONS:
             Enable verbose output
     -j, --jobs <OPTION>
             Number of parallel jobs
+    -h, --help
+            Show help message and exit.
+    -V, --version
+            Show version and exit.
+        --completions <OPTION>
+            Generate shell completions.

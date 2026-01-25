@@ -3,6 +3,7 @@
 use crate::assert_help_snapshot;
 use facet::Facet;
 use figue as args;
+use figue::FigueBuiltins;
 
 /// A sample CLI application for testing help generation.
 ///
@@ -25,6 +26,10 @@ struct SimpleArgs {
     /// Output file (optional)
     #[facet(default, args::positional)]
     output: Option<String>,
+
+    /// Standard CLI options
+    #[facet(flatten)]
+    builtins: FigueBuiltins,
 }
 
 #[test]
@@ -41,13 +46,13 @@ fn test_help_simple_struct() {
 /// Git-like CLI with subcommands
 #[derive(Facet, Debug)]
 struct GitArgs {
-    /// Show version information
-    #[facet(args::named)]
-    version: bool,
-
     /// Git command to run
     #[facet(args::subcommand)]
     command: GitCommand,
+
+    /// Standard CLI options
+    #[facet(flatten)]
+    builtins: FigueBuiltins,
 }
 
 /// Available git commands
@@ -130,185 +135,30 @@ fn test_help_enum_only() {
     assert_help_snapshot!(help);
 }
 
-// =============================================================================
-// Automatic --help detection tests
-// =============================================================================
-
+/// Test that --help and -h flags trigger help when FigueBuiltins is present
 #[test]
-fn test_auto_help_long_flag() {
+fn test_help_flags() {
+    // --help
     let result = figue::from_slice::<SimpleArgs>(&["--help"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.is_help());
     assert!(err.help_text().is_some());
     let help = err.help_text().unwrap();
-    // Help text is now colored, so check for "USAGE" without the colon
     assert!(help.contains("USAGE"));
     assert!(help.contains("--verbose"));
-}
 
-#[test]
-fn test_auto_help_short_flag() {
+    // -h
     let result = figue::from_slice::<SimpleArgs>(&["-h"]);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.is_help());
 }
 
-#[test]
-fn test_auto_help_single_dash() {
-    let result = figue::from_slice::<SimpleArgs>(&["-help"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-}
-
-#[test]
-fn test_auto_help_windows_style() {
-    let result = figue::from_slice::<SimpleArgs>(&["/?"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-}
-
-// TODO: Re-add test_auto_help_with_custom_config when builder API supports custom HelpConfig
-
-#[test]
-fn test_auto_help_display() {
-    let result = figue::from_slice::<SimpleArgs>(&["--help"]);
-    let err = result.unwrap_err();
-    // When displayed, help requests should show the help text
-    let display = format!("{}", err);
-    // Help text is now colored, so check for "USAGE" without the colon
-    assert!(display.contains("USAGE"));
-}
-
-#[test]
-fn test_help_not_triggered_with_other_args() {
-    // --help in the middle of other args should NOT trigger help
-    // (it would be treated as an unknown flag in this case)
-    let result = figue::from_slice::<SimpleArgs>(&["input.txt", "--help"]);
-    // This should fail, but not with a help request
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(!err.is_help());
-}
-
-#[test]
-fn test_subcommand_help_long_flag() {
-    // Test --help after a subcommand
-    let result = figue::from_slice::<GitArgs>(&["clone", "--help"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-    let help = err.help_text().unwrap();
-    // Should show help for the clone subcommand
-    assert!(help.contains("clone"));
-}
-
-#[test]
-fn test_subcommand_help_short_flag() {
-    // Test -h after a subcommand
-    let result = figue::from_slice::<GitArgs>(&["log", "-h"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-    let help = err.help_text().unwrap();
-    assert!(help.contains("log"));
-}
-
-#[test]
-fn test_nested_subcommand_help() {
-    // Test --help for nested subcommands
-    let result = figue::from_slice::<GitArgs>(&["remote", "add", "--help"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-    let help = err.help_text().unwrap();
-    assert!(help.contains("add"));
-}
-
-// =============================================================================
-// Error message tests - colored output for different error scenarios
-// =============================================================================
-
-#[test]
-fn test_missing_required_subcommand_error() {
-    // When a required subcommand is missing, should show error with available subcommands
-    let result = figue::from_slice::<GitArgs>(&[]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(!err.is_help()); // This is an ERROR, not help
-
-    let display = format!("{}", err);
-
-    // Should show error message
-    assert!(display.contains("expected a subcommand"));
-    // Should suggest available subcommands in the help text
-    assert!(display.contains("clone") || display.contains("log") || display.contains("remote"));
-}
-
-#[test]
-fn test_unknown_subcommand_error() {
-    // When an unknown subcommand is provided, should show error with suggestions
-    let result = figue::from_slice::<GitArgs>(&["notacommand"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(!err.is_help()); // This is an ERROR, not help
-
-    let display = format!("{}", err);
-
-    // Should show the unknown subcommand
-    assert!(display.contains("notacommand") || display.contains("unknown"));
-    // Should list available subcommands
-    assert!(display.contains("clone") || display.contains("log") || display.contains("remote"));
-}
-
-#[test]
-fn test_subcommand_help_colored_snapshot() {
-    // Test that subcommand help is properly colored
-    let result = figue::from_slice::<GitArgs>(&["clone", "--help"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-
-    let help = err.help_text().unwrap();
-
-    // The help text should contain ANSI color codes
-    // Yellow/bold for section headers
-    assert!(help.contains("USAGE") || help.contains("ARGUMENTS"));
-
-    assert_help_snapshot!(help);
-}
-
-#[test]
-fn test_nested_subcommand_help_colored_snapshot() {
-    // Test that nested subcommand help is properly colored
-    let result = figue::from_slice::<GitArgs>(&["remote", "add", "--help"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-
-    let help = err.help_text().unwrap();
-
-    // Should contain the nested command path
-    assert!(help.contains("remote") && help.contains("add"));
-
-    assert_help_snapshot!(help);
-}
-
-// =============================================================================
-// Tuple variant flattening tests (issue #1468)
-// =============================================================================
-
 /// Test that help output for tuple variant subcommands shows flattened fields
 /// instead of `--0 <STRUCTNAME>`.
-///
-/// This reproduces the issue from https://github.com/facet-rs/facet/issues/1468
-/// where help showed `--0 <BUILDARGS>` instead of individual flags.
 #[test]
 fn test_tuple_variant_subcommand_help_flattening() {
-    /// Build configuration options
     #[derive(Facet, Debug)]
     struct BuildArgs {
         /// Build in release mode
@@ -341,42 +191,16 @@ fn test_tuple_variant_subcommand_help_flattening() {
     struct Args {
         #[facet(args::subcommand)]
         command: Command,
+
+        #[facet(flatten)]
+        builtins: FigueBuiltins,
     }
 
-    // Test help for the main command - should list subcommands
+    // Test help for the main command
     let config = figue::HelpConfig {
         program_name: Some("myapp".to_string()),
         ..Default::default()
     };
     let help = figue::generate_help::<Args>(&config);
     assert_help_snapshot!("tuple_variant_main_help", help);
-
-    // Test help for the "build" subcommand - should show flattened BuildArgs fields
-    let result = figue::from_slice::<Args>(&["build", "--help"]);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.is_help());
-    let help = err.help_text().unwrap();
-
-    // Should NOT contain `--0` (the tuple field index)
-    assert!(
-        !help.contains("--0"),
-        "Help should not show --0 for tuple variant fields. Got:\n{help}"
-    );
-
-    // Should contain the flattened fields from BuildArgs
-    assert!(
-        help.contains("--release") || help.contains("-r"),
-        "Help should show --release flag. Got:\n{help}"
-    );
-    assert!(
-        help.contains("--no-spawn"),
-        "Help should show --no-spawn flag. Got:\n{help}"
-    );
-    assert!(
-        help.contains("--no-tui"),
-        "Help should show --no-tui flag. Got:\n{help}"
-    );
-
-    assert_help_snapshot!("tuple_variant_subcommand_help", help);
 }

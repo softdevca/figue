@@ -428,6 +428,10 @@ impl ConfigValueDeserializeError {
 }
 
 /// Parser that emits events from a `ConfigValue` tree.
+///
+/// This parser tracks shape context as it descends into nested structures,
+/// allowing it to translate original field names (used in ConfigValue) to
+/// effective names (respecting `#[facet(rename = "...")]` attributes).
 pub struct ConfigValueParser<'input> {
     /// Stack of values to process.
     stack: Vec<StackFrame<'input>>,
@@ -440,33 +444,37 @@ pub struct ConfigValueParser<'input> {
 /// A frame on the parsing stack.
 enum StackFrame<'input> {
     /// Processing an object - emit key-value pairs.
+    /// The shape is the struct shape, used to look up field metadata for rename translation.
     Object {
-        entries: Vec<(&'input str, &'input ConfigValue)>,
+        entries: Vec<(&'input str, &'input ConfigValue, Option<&'static Shape>)>,
         index: usize,
+        shape: Option<&'static Shape>,
     },
     /// Processing an array - emit items in sequence.
     Array {
         items: &'input [ConfigValue],
         index: usize,
+        element_shape: Option<&'static Shape>,
     },
-    /// A single value to emit.
-    Value(&'input ConfigValue),
+    /// A single value to emit with its expected shape.
+    Value(&'input ConfigValue, Option<&'static Shape>),
     /// Processing an enum variant - externally tagged format: {"VariantName": {...}}
     /// Phase 0: emit FieldKey with variant name
     /// Phase 1: emit variant content (struct with fields, or Unit for unit variants)
     /// Phase 2: emit StructEnd
     Enum {
         variant: &'input str,
-        fields: Vec<(&'input str, &'input ConfigValue)>,
+        fields: Vec<(&'input str, &'input ConfigValue, Option<&'static Shape>)>,
         phase: u8,
+        shape: Option<&'static Shape>,
     },
 }
 
 impl<'input> ConfigValueParser<'input> {
     /// Create a new parser from a `ConfigValue`.
-    pub fn new(value: &'input ConfigValue, _target_shape: &'static Shape) -> Self {
+    pub fn new(value: &'input ConfigValue, target_shape: &'static Shape) -> Self {
         Self {
-            stack: vec![StackFrame::Value(value)],
+            stack: vec![StackFrame::Value(value, Some(target_shape))],
             last_span: None,
             peeked: None,
         }
@@ -482,6 +490,36 @@ impl<'input> ConfigValueParser<'input> {
         if let Some(span) = sourced.span {
             self.last_span = Some(span);
         }
+    }
+
+    /// Look up a field by its original name in a struct shape and return its effective name.
+    /// Falls back to the original name if the shape is not a struct or field is not found.
+    fn get_effective_field_name(
+        original_name: &'input str,
+        shape: Option<&'static Shape>,
+    ) -> &'input str {
+        if let Some(shape) = shape
+            && let Type::User(UserType::Struct(s)) = &shape.ty
+            && let Some(field) = s.fields.iter().find(|f| f.name == original_name)
+        {
+            // SAFETY: effective_name returns &'static str which outlives 'input
+            return field.effective_name();
+        }
+        original_name
+    }
+
+    /// Get the shape of a field by its original name from a struct shape.
+    fn get_field_shape(
+        original_name: &str,
+        shape: Option<&'static Shape>,
+    ) -> Option<&'static Shape> {
+        if let Some(shape) = shape
+            && let Type::User(UserType::Struct(s)) = &shape.ty
+            && let Some(field) = s.fields.iter().find(|f| f.name == original_name)
+        {
+            return Some(field.shape.get());
+        }
+        None
     }
 }
 
@@ -505,26 +543,32 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
             };
 
             match frame {
-                StackFrame::Value(value) => {
-                    return Ok(Some(self.emit_value(value)?));
+                StackFrame::Value(value, shape) => {
+                    return Ok(Some(self.emit_value(value, shape)?));
                 }
-                StackFrame::Object { entries, index } => {
+                StackFrame::Object {
+                    entries,
+                    index,
+                    shape,
+                } => {
                     if index < entries.len() {
                         // Emit the next key-value pair
-                        let (key, value) = entries[index];
+                        let (original_key, value, field_shape) = entries[index];
 
                         // Push continuation for next entry
                         self.stack.push(StackFrame::Object {
                             entries: entries.clone(),
                             index: index + 1,
+                            shape,
                         });
 
-                        // Push value to process after key
-                        self.stack.push(StackFrame::Value(value));
+                        // Push value to process after key (with the field's shape)
+                        self.stack.push(StackFrame::Value(value, field_shape));
 
-                        // Emit key
+                        // Emit key using effective name (respects #[facet(rename = "...")])
+                        let effective_key = Self::get_effective_field_name(original_key, shape);
                         return Ok(Some(ParseEvent::FieldKey(FieldKey::new(
-                            key,
+                            effective_key,
                             FieldLocationHint::KeyValue,
                         ))));
                     } else {
@@ -532,16 +576,22 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                         return Ok(Some(ParseEvent::StructEnd));
                     }
                 }
-                StackFrame::Array { items, index } => {
+                StackFrame::Array {
+                    items,
+                    index,
+                    element_shape,
+                } => {
                     if index < items.len() {
                         // Push continuation for next item
                         self.stack.push(StackFrame::Array {
                             items,
                             index: index + 1,
+                            element_shape,
                         });
 
-                        // Push item to process
-                        self.stack.push(StackFrame::Value(&items[index]));
+                        // Push item to process with element shape
+                        self.stack
+                            .push(StackFrame::Value(&items[index], element_shape));
 
                         // Continue to process the value
                         continue;
@@ -554,6 +604,7 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                     variant,
                     fields,
                     phase,
+                    shape,
                 } => {
                     match phase {
                         0 => {
@@ -562,6 +613,7 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                                 variant,
                                 fields,
                                 phase: 1,
+                                shape,
                             });
                             return Ok(Some(ParseEvent::FieldKey(FieldKey::new(
                                 variant,
@@ -575,6 +627,7 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                                 variant,
                                 fields: Vec::new(), // no longer needed
                                 phase: 2,
+                                shape: None,
                             });
 
                             if fields.is_empty() {
@@ -585,6 +638,7 @@ impl<'input> FormatParser<'input> for ConfigValueParser<'input> {
                                 self.stack.push(StackFrame::Object {
                                     entries: fields,
                                     index: 0,
+                                    shape,
                                 });
                                 return Ok(Some(ParseEvent::StructStart(ContainerKind::Object)));
                             }
@@ -635,12 +689,13 @@ impl<'de> facet_format::ProbeStream<'de> for EmptyProbe {
     }
 }
 
-/// Get struct fields that are missing from the ConfigValue and need CLI-friendly defaults.
+/// Helper methods for emitting values.
 impl<'input> ConfigValueParser<'input> {
-    /// Emit an event for a single value.
+    /// Emit an event for a single value, tracking the shape for nested structures.
     fn emit_value(
         &mut self,
         value: &'input ConfigValue,
+        shape: Option<&'static Shape>,
     ) -> Result<ParseEvent<'input>, ConfigValueParseError> {
         match value {
             ConfigValue::Null(sourced) => {
@@ -668,10 +723,14 @@ impl<'input> ConfigValueParser<'input> {
             ConfigValue::Array(sourced) => {
                 self.update_span(sourced);
 
+                // Get element shape from the array/vec shape
+                let element_shape = shape.and_then(|s| s.inner);
+
                 // Push array processing
                 self.stack.push(StackFrame::Array {
                     items: &sourced.value,
                     index: 0,
+                    element_shape,
                 });
 
                 Ok(ParseEvent::SequenceStart(ContainerKind::Array))
@@ -679,24 +738,54 @@ impl<'input> ConfigValueParser<'input> {
             ConfigValue::Object(sourced) => {
                 self.update_span(sourced);
 
-                // Collect entries as borrowed slices
-                let entries: Vec<(&str, &ConfigValue)> =
-                    sourced.value.iter().map(|(k, v)| (k.as_str(), v)).collect();
+                // Collect entries with their field shapes looked up from the struct shape
+                let entries: Vec<(&str, &ConfigValue, Option<&'static Shape>)> = sourced
+                    .value
+                    .iter()
+                    .map(|(k, v)| {
+                        let field_shape = Self::get_field_shape(k.as_str(), shape);
+                        (k.as_str(), v, field_shape)
+                    })
+                    .collect();
 
-                // Push object processing
-                self.stack.push(StackFrame::Object { entries, index: 0 });
+                // Push object processing with shape for field name translation
+                self.stack.push(StackFrame::Object {
+                    entries,
+                    index: 0,
+                    shape,
+                });
 
                 Ok(ParseEvent::StructStart(ContainerKind::Object))
             }
             ConfigValue::Enum(sourced) => {
                 self.update_span(sourced);
 
-                // Collect entries as borrowed slices from the enum's fields
-                let fields: Vec<(&str, &ConfigValue)> = sourced
+                // For enums, find the variant's fields from the enum shape
+                let variant_fields: Option<&'static [facet_core::Field]> = shape.and_then(|s| {
+                    if let Type::User(UserType::Enum(e)) = &s.ty {
+                        e.variants
+                            .iter()
+                            .find(|v| v.name == sourced.value.variant)
+                            .map(|v| v.data.fields)
+                    } else {
+                        None
+                    }
+                });
+
+                // Collect entries with their field shapes from the variant's fields
+                let fields: Vec<(&str, &ConfigValue, Option<&'static Shape>)> = sourced
                     .value
                     .fields
                     .iter()
-                    .map(|(k, v)| (k.as_str(), v))
+                    .map(|(k, v)| {
+                        let field_shape = variant_fields.and_then(|fields| {
+                            fields
+                                .iter()
+                                .find(|f| f.name == k.as_str())
+                                .map(|f| f.shape.get())
+                        });
+                        (k.as_str(), v, field_shape)
+                    })
                     .collect();
 
                 // Push enum processing frame (phase 0)
@@ -706,6 +795,7 @@ impl<'input> ConfigValueParser<'input> {
                     variant: &sourced.value.variant,
                     fields,
                     phase: 0,
+                    shape: None, // Enum variants use fields directly, not a shape wrapper
                 });
 
                 // Emit the outer struct start (the enum wrapper)

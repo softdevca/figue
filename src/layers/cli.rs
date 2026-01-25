@@ -268,7 +268,24 @@ impl<'a> ParseContext<'a> {
     }
 
     fn parse_short_flag(&mut self, arg: &str, level: &ArgLevelSchema) {
-        let chars: Vec<char> = arg[1..].chars().collect();
+        let flag_part = &arg[1..]; // strip "-"
+
+        // Check for `-k=value` syntax (single short flag with equals)
+        if let Some(eq_pos) = flag_part.find('=') {
+            let flag_char = flag_part[..eq_pos].chars().next();
+            if eq_pos == 1 {
+                // Valid: -k=value (single char before =)
+                if let Some(ch) = flag_char {
+                    let value_str = &flag_part[eq_pos + 1..];
+                    self.parse_short_flag_with_value(ch, value_str, level);
+                    self.index += 1;
+                    return;
+                }
+            }
+            // Invalid: -abc=value or -=value - fall through to error handling
+        }
+
+        let chars: Vec<char> = flag_part.chars().collect();
 
         for (i, ch) in chars.iter().enumerate() {
             // Find argument with this short flag
@@ -330,6 +347,53 @@ impl<'a> ParseContext<'a> {
             }
         }
         self.index += 1;
+    }
+
+    /// Parse a short flag with an inline value (e.g., -k=3)
+    fn parse_short_flag_with_value(&mut self, ch: char, value_str: &str, level: &ArgLevelSchema) {
+        let found = level.args().iter().find(|(_, schema)| {
+            if let ArgKind::Named { short: Some(s), .. } = schema.kind() {
+                *s == ch
+            } else {
+                false
+            }
+        });
+
+        if let Some((name, arg_schema)) = found {
+            if let ArgKind::Named { counted, .. } = arg_schema.kind()
+                && *counted
+            {
+                self.increment_counted(name, arg_schema.target_path());
+                return;
+            }
+
+            let is_bool = arg_schema.value().inner_if_option().is_bool();
+            let prov_arg = format!("-{}", ch);
+
+            if is_bool {
+                // --flag=true or --flag=false
+                let value = matches!(
+                    value_str.to_lowercase().as_str(),
+                    "true" | "yes" | "1" | "on" | ""
+                );
+                let prov = Provenance::cli(&prov_arg, value.to_string());
+                self.insert_at_path(
+                    arg_schema.target_path(),
+                    ConfigValue::Bool(Sourced {
+                        value,
+                        span: None,
+                        provenance: Some(prov),
+                    }),
+                );
+            } else {
+                // Value starts after the '=' which is at position 2 (after -k)
+                let value_span = self.span_within_current(3, value_str.len());
+                let value = self.parse_value_string(value_str, &prov_arg, value_span);
+                self.insert_at_path(arg_schema.target_path(), value);
+            }
+        } else {
+            self.emit_error(format!("unknown flag: -{}", ch));
+        }
     }
 
     fn parse_flag_value(
