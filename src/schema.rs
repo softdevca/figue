@@ -126,6 +126,10 @@ pub struct ConfigStructSchema {
     /// None for nested structs within config.
     field_name: Option<String>,
 
+    /// Environment variable prefix from `#[facet(args::env_prefix = "...")]`.
+    /// Only present on the top-level config struct, not nested structs.
+    env_prefix: Option<String>,
+
     /// Shape of the config struct.
     #[facet(skip)]
     shape: &'static Shape,
@@ -504,6 +508,11 @@ impl ConfigStructSchema {
     /// Get the field name in the parent struct (e.g., "config").
     pub fn field_name(&self) -> Option<&str> {
         self.field_name.as_deref()
+    }
+
+    /// Get the environment variable prefix (e.g., "MYAPP").
+    pub fn env_prefix(&self) -> Option<&str> {
+        self.env_prefix.as_deref()
     }
 
     /// Get the fields of this config struct.

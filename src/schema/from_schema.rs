@@ -68,10 +68,13 @@ impl Schema {
                 Def::Option(opt) => opt.t,
                 _ => shape,
             };
+            // Extract env_prefix from the config field's attributes
+            let env_prefix = extract_env_prefix(field);
             Some(config_struct_schema_from_shape(
                 config_shape,
                 &field_ctx,
                 Some(field.name.to_string()),
+                env_prefix,
             )?)
         } else {
             None
@@ -93,6 +96,18 @@ fn has_any_args_attr(field: &Field) -> bool {
         || field.has_attr(Some("args"), "short")
         || field.has_attr(Some("args"), "counted")
         || field.has_attr(Some("args"), "env_prefix")
+}
+
+/// Extract the env_prefix value from a field's `#[facet(args::env_prefix = "...")]` attribute.
+fn extract_env_prefix(field: &Field) -> Option<String> {
+    let attr = field.get_attr(Some("args"), "env_prefix")?;
+    let parsed = attr.get_as::<crate::Attr>()?;
+
+    if let crate::Attr::EnvPrefix(prefix_opt) = parsed {
+        prefix_opt.map(|s| s.to_string())
+    } else {
+        None
+    }
 }
 
 fn docs_from_lines(lines: &'static [&'static str]) -> Docs {
@@ -194,7 +209,7 @@ fn value_schema_from_shape(
         }),
         _ => match &shape.ty {
             Type::User(UserType::Struct(_)) => Ok(ValueSchema::Struct {
-                fields: config_struct_schema_from_shape(shape, ctx, None)?,
+                fields: config_struct_schema_from_shape(shape, ctx, None, None)?,
                 shape,
             }),
             _ => Ok(ValueSchema::Leaf(leaf_schema_from_shape(shape, ctx)?)),
@@ -217,7 +232,7 @@ fn config_value_schema_from_shape(
         })),
         _ => match &shape.ty {
             Type::User(UserType::Struct(_)) => Ok(ConfigValueSchema::Struct(
-                config_struct_schema_from_shape(shape, ctx, None)?,
+                config_struct_schema_from_shape(shape, ctx, None, None)?,
             )),
             _ => Ok(ConfigValueSchema::Leaf(leaf_schema_from_shape(shape, ctx)?)),
         },
@@ -228,14 +243,16 @@ fn config_struct_schema_from_shape(
     shape: &'static Shape,
     ctx: &SchemaErrorContext,
     field_name: Option<String>,
+    env_prefix: Option<String>,
 ) -> Result<ConfigStructSchema, SchemaError> {
-    config_struct_schema_from_shape_with_prefix(shape, ctx, field_name, Vec::new())
+    config_struct_schema_from_shape_with_prefix(shape, ctx, field_name, env_prefix, Vec::new())
 }
 
 fn config_struct_schema_from_shape_with_prefix(
     shape: &'static Shape,
     ctx: &SchemaErrorContext,
     field_name: Option<String>,
+    env_prefix: Option<String>,
     path_prefix: Vec<String>,
 ) -> Result<ConfigStructSchema, SchemaError> {
     let struct_type = match &shape.ty {
@@ -271,9 +288,11 @@ fn config_struct_schema_from_shape_with_prefix(
             new_prefix.push(field.effective_name().to_string());
 
             // Recursively process the inner struct's fields
+            // Nested flattened structs don't have their own env_prefix
             let inner = config_struct_schema_from_shape_with_prefix(
                 inner_shape,
                 &field_ctx,
+                None,
                 None,
                 new_prefix,
             )?;
@@ -307,6 +326,7 @@ fn config_struct_schema_from_shape_with_prefix(
 
     Ok(ConfigStructSchema {
         field_name,
+        env_prefix,
         shape,
         fields: fields_map,
     })
