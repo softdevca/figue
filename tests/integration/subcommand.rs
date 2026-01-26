@@ -4,6 +4,7 @@ use crate::assert_diag_snapshot;
 use facet::Facet;
 use facet_testhelpers::test;
 use figue as args;
+use figue::driver::DriverError;
 
 /// Test tuple variant subcommand with struct payload (like clap's automatic flattening)
 /// When a subcommand variant is `Add(AddArgs)` instead of `Add { name: String }`,
@@ -321,9 +322,9 @@ fn test_unknown_subcommand_error() {
     assert_diag_snapshot!(err);
 }
 
-/// Test error when required subcommand is missing
+/// Test that missing subcommand shows help instead of error
 #[test]
-fn test_missing_subcommand_error() {
+fn test_missing_subcommand_shows_help() {
     #[derive(Facet, Debug)]
     #[repr(u8)]
     enum Command {
@@ -341,7 +342,12 @@ fn test_missing_subcommand_error() {
 
     let result: Result<Args, _> = figue::from_slice(&[]);
     let err = result.unwrap_err();
-    assert_diag_snapshot!(err);
+    // Should return Help, not Failed
+    assert!(
+        matches!(err, DriverError::Help { .. }),
+        "expected Help error, got: {:?}",
+        err
+    );
 }
 
 /// Test error when nested subcommand is missing (issue #1195 scenario)

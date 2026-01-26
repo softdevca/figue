@@ -267,6 +267,25 @@ impl<T: Facet<'static>> Driver<T> {
         collect_missing_fields(&value_with_defaults, T::SHAPE, "", &mut missing_fields);
 
         if !missing_fields.is_empty() {
+            // If the only missing field is the subcommand, show help instead of "missing fields"
+            let subcommand_field_name = self.config.schema.args().subcommand_field_name();
+            let only_missing_subcommand = subcommand_field_name.is_some()
+                && missing_fields.len() == 1
+                && missing_fields[0].field_name == subcommand_field_name.unwrap();
+
+            if only_missing_subcommand {
+                // Show help instead of "missing required fields"
+                let help_config = self
+                    .config
+                    .help_config
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_default();
+
+                let help = generate_help_for_subcommand(T::SHAPE, &[], &help_config);
+                return Err(DriverError::Help { text: help });
+            }
+
             // Show dump with missing field markers (includes Sources header)
             let mut dump_buf = Vec::new();
             let resolution = file_resolution.as_ref().cloned().unwrap_or_default();
