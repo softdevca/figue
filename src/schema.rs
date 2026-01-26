@@ -170,6 +170,7 @@ pub enum LeafKind {
     /// Primitive scalar value (bool/string/number-like).
     Scalar(ScalarType),
     /// Enum value (variants represented as CLI strings).
+    #[allow(dead_code)]
     Enum { variants: Vec<String> },
 }
 
@@ -304,6 +305,13 @@ pub struct ConfigFieldSchema {
 
     /// Whether this field contains sensitive data (passwords, tokens, etc.)
     sensitive: bool,
+
+    /// Environment variable aliases for this field.
+    ///
+    /// These are absolute env var names (like "DATABASE_URL") that can be used
+    /// to set this field's value, in addition to the standard prefixed name.
+    /// The prefixed env var takes priority over aliases.
+    env_aliases: Vec<String>,
 
     /// Value schema for a field
     pub value: ConfigValueSchema,
@@ -667,6 +675,14 @@ impl ConfigFieldSchema {
     /// Check if this field contains sensitive data.
     pub fn is_sensitive(&self) -> bool {
         self.sensitive
+    }
+
+    /// Get environment variable aliases for this field.
+    ///
+    /// These are absolute env var names (like "DATABASE_URL") that can be used
+    /// to set this field's value, in addition to the standard prefixed name.
+    pub fn env_aliases(&self) -> &[String] {
+        &self.env_aliases
     }
 }
 
