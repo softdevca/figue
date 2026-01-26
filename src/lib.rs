@@ -15,7 +15,6 @@ use figue_attrs as args;
 #[macro_use]
 mod macros;
 
-// pub(crate) mod arg;
 pub(crate) mod builder;
 pub(crate) mod completions;
 pub(crate) mod config_format;
@@ -49,6 +48,7 @@ pub use completions::{Shell, generate_completions, generate_completions_for_shap
 #[cfg(feature = "styx")]
 pub use config_format::StyxFormat;
 pub use config_format::{ConfigFormat, ConfigFormatError, JsonFormat};
+pub use config_value::ConfigValue;
 pub use driver::{Driver, DriverError, DriverOutcome, DriverOutput, DriverReport};
 pub use error::{ArgsErrorKind, ArgsErrorWithInput};
 pub use help::{HelpConfig, generate_help, generate_help_for_shape};
