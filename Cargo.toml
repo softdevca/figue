@@ -31,7 +31,6 @@ facet-error = { git = "https://github.com/facet-rs/facet", branch = "main", vers
 facet-showcase = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
 facet-solver = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
 facet-testhelpers = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43" }
-facet-styx = { git = "https://github.com/bearcove/styx", branch = "main", version = "1.0" }
 
 # External dependencies
 camino = "1.1"
