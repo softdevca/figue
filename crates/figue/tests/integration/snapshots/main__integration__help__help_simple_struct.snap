@@ -26,5 +26,5 @@ OPTIONS:
             Show help message and exit.
     -V, --version
             Show version and exit.
-        --completions <SHELL>
-            Generate shell completions for Bash, Fish, or Zsh.
+        --completions <bash,zsh,fish>
+            Generate shell completions.
