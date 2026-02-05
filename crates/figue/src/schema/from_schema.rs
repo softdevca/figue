@@ -147,10 +147,10 @@ fn has_env_subst_all(shape: &'static Shape) -> bool {
 fn extract_label(field: &Field) -> Option<String> {
     // Prefer typed parsing via Attr
     if let Some(attr) = field.get_attr(Some("args"), "label") {
-        if let Some(parsed) = attr.get_as::<Attr>() {
-            if let Attr::Label(s) = parsed {
-                return Some(s.to_string());
-            }
+        if let Some(parsed) = attr.get_as::<Attr>()
+            && let Attr::Label(s) = parsed
+        {
+            return Some(s.to_string());
         }
         // Fallback: direct &str if typed form isn't available
         if let Some(s) = attr.get_as::<&str>() {
