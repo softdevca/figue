@@ -400,7 +400,7 @@ pub struct FigueBuiltins {
     #[facet(args::named, args::short = 'V', args::version, default)]
     pub version: bool,
 
-    /// Generate shell completions for Bash, Fish, or Zsh.
+    /// Generate shell completions.
     #[facet(args::named, args::completions, default)]
     pub completions: Option<Shell>,
 }
