@@ -26,7 +26,7 @@ pub enum Shell {
 ///
 /// This is a convenience function that builds a Schema internally.
 /// If you already have a Schema, use [generate_completions_for_schema] instead.
-pub fn generate_completions<T: Facet<'static>>(shell: Shell, program_name: &str) -> String {
+pub(crate) fn generate_completions<T: Facet<'static>>(shell: Shell, program_name: &str) -> String {
     generate_completions_for_shape(T::SHAPE, shell, program_name)
 }
 
@@ -34,7 +34,7 @@ pub fn generate_completions<T: Facet<'static>>(shell: Shell, program_name: &str)
 ///
 /// This is a convenience function that builds a Schema internally.
 /// If you already have a Schema, use [generate_completions_for_schema] instead.
-pub fn generate_completions_for_shape(
+pub(crate) fn generate_completions_for_shape(
     shape: &'static facet_core::Shape,
     shell: Shell,
     program_name: &str,
